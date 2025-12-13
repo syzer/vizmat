@@ -143,13 +143,16 @@ pub(crate) fn handle_load_default_button(
         (Changed<Interaction>, With<LoadDefaultButton>),
     >,
     mut commands: Commands,
+    crystal: Option<Res<Crystal>>,
 ) {
     for (interaction, mut color) in &mut interaction_query {
         match *interaction {
             Interaction::Pressed => {
                 *color = BackgroundColor(Color::srgb(0.35, 0.35, 0.35));
                 // Load default water molecule
-                crate::io::load_default_crystal(commands.reborrow());
+                if crystal.is_none() {
+                    crate::io::load_default_crystal(commands.reborrow());
+                }
             }
             Interaction::Hovered => {
                 *color = BackgroundColor(Color::srgb(0.25, 0.25, 0.25));
