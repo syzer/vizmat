@@ -29,3 +29,6 @@ debug = false
 
 [profile.dev]
 opt-level = 0
+
+[patch.crates-io]
+coreaudio-sys = { path = "third_party/coreaudio-sys" }
