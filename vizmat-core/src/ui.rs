@@ -1103,10 +1103,12 @@ pub(crate) fn camera_controls(
     mut mouse_motion_events: EventReader<MouseMotion>,
     mut mouse_wheel_events: EventReader<MouseWheel>,
     mut camera_rig: ResMut<CameraRig>,
+    ui_interactions: Query<&Interaction, With<Button>>,
 ) {
     if let Ok(mut transform) = camera_query.single_mut() {
         let mut zoom_change = 0.0;
         let mut pan_request = Vec2::ZERO;
+        let ui_active = ui_interactions.iter().any(|i| *i != Interaction::None);
 
         const MIN_DISTANCE: f32 = 0.2;
         const MAX_DISTANCE: f32 = 200.0;
@@ -1116,7 +1118,7 @@ pub(crate) fn camera_controls(
             mouse_delta += motion.delta;
         }
 
-        if mouse_buttons.pressed(MouseButton::Left) {
+        if !ui_active && mouse_buttons.pressed(MouseButton::Left) {
             let sensitivity = 0.005;
             let yaw_delta = -mouse_delta.x * sensitivity;
             let pitch_delta = -mouse_delta.y * sensitivity;
@@ -1154,12 +1156,14 @@ pub(crate) fn camera_controls(
             camera_rig.target = transform.translation + rotated_forward * distance;
         }
 
-        if mouse_buttons.pressed(MouseButton::Right) {
+        if !ui_active && mouse_buttons.pressed(MouseButton::Right) {
             pan_request = mouse_delta;
         }
 
-        for wheel in mouse_wheel_events.read() {
-            zoom_change -= wheel.y * 0.002;
+        if !ui_active {
+            for wheel in mouse_wheel_events.read() {
+                zoom_change -= wheel.y * 0.002;
+            }
         }
 
         // Keep camera offset updated relative to target.
