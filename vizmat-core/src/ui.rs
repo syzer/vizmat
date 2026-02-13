@@ -478,6 +478,7 @@ pub(crate) fn bond_tolerance_controls(
     )>,
     mut fill_query: Query<&mut Node, With<BondToleranceFill>>,
     theme: Res<UiTheme>,
+    time: Res<Time>,
 ) {
     const MIN_TOLERANCE: f32 = 1.00;
     const MAX_TOLERANCE: f32 = 1.60;
@@ -510,8 +511,9 @@ pub(crate) fn bond_tolerance_controls(
                 let raw = value_from_slider(pos.x);
                 let snapped = (raw / STEP).round() * STEP;
                 let snapped = snapped.clamp(MIN_TOLERANCE, MAX_TOLERANCE);
-                if (snapped - settings.tolerance_scale).abs() > f32::EPSILON {
-                    settings.tolerance_scale = snapped;
+                if (snapped - settings.ui_tolerance_scale).abs() > f32::EPSILON {
+                    settings.ui_tolerance_scale = snapped;
+                    settings.last_ui_change_secs = time.elapsed_secs_f64();
                     changed = true;
                 }
             }
@@ -520,7 +522,7 @@ pub(crate) fn bond_tolerance_controls(
 
     if changed {
         if let Ok(mut text) = text_queries.p0().single_mut() {
-            text.0 = format!("{:.2}", settings.tolerance_scale);
+            text.0 = format!("{:.2}", settings.ui_tolerance_scale);
         }
         if let Ok(mut text) = text_queries.p1().single_mut() {
             text.0 = if settings.enabled {
@@ -530,8 +532,21 @@ pub(crate) fn bond_tolerance_controls(
             };
         }
         if let Ok(mut fill) = fill_query.single_mut() {
-            fill.width = Val::Percent(slider_percent(settings.tolerance_scale));
+            fill.width = Val::Percent(slider_percent(settings.ui_tolerance_scale));
         }
+    }
+}
+
+pub(crate) fn apply_bond_tolerance_debounce(
+    mut settings: ResMut<BondInferenceSettings>,
+    time: Res<Time>,
+) {
+    const APPLY_DELAY_SECS: f64 = 0.20;
+    if (settings.tolerance_scale - settings.ui_tolerance_scale).abs() <= f32::EPSILON {
+        return;
+    }
+    if time.elapsed_secs_f64() - settings.last_ui_change_secs >= APPLY_DELAY_SECS {
+        settings.tolerance_scale = settings.ui_tolerance_scale;
     }
 }
 
@@ -743,9 +758,17 @@ pub(crate) fn update_scene(
     atom_query: Query<Entity, With<AtomEntity>>,
     bond_query: Query<Entity, With<BondEntity>>,
     molecule_root: Query<Entity, With<MoleculeRoot>>,
+    mut last_bond_cfg: Local<Option<(bool, f32)>>,
 ) {
     if let Some(crystal) = crystal {
-        if crystal.is_changed() || bond_settings.is_changed() {
+        let current_bond_cfg = (bond_settings.enabled, bond_settings.tolerance_scale);
+        let bond_cfg_changed = match *last_bond_cfg {
+            Some(prev) => prev != current_bond_cfg,
+            None => true,
+        };
+        *last_bond_cfg = Some(current_bond_cfg);
+
+        if crystal.is_changed() || bond_cfg_changed {
             // Clear existing atoms
             for entity in atom_query.iter() {
                 commands.entity(entity).despawn();
@@ -1062,10 +1085,18 @@ pub fn refresh_atoms_system(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     molecule_root: Query<Entity, With<MoleculeRoot>>,
+    mut last_bond_cfg: Local<Option<(bool, f32)>>,
 ) {
     // Only run when Crystal resource changes
     if let Some(ref crystal) = crystal {
-        if !crystal.is_changed() && !bond_settings.is_changed() {
+        let current_bond_cfg = (bond_settings.enabled, bond_settings.tolerance_scale);
+        let bond_cfg_changed = match *last_bond_cfg {
+            Some(prev) => prev != current_bond_cfg,
+            None => true,
+        };
+        *last_bond_cfg = Some(current_bond_cfg);
+
+        if !crystal.is_changed() && !bond_cfg_changed {
             return;
         }
     }
