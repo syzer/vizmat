@@ -946,7 +946,10 @@ pub(crate) fn camera_controls(
             let sprint =
                 keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
             let move_speed = if sprint { 10.0 } else { 5.0 };
-            let step = move_dir.normalize() * move_speed * time.delta_secs();
+            // Scale keyboard movement with viewing distance so large structures
+            // don't feel sluggish and small structures don't feel too twitchy.
+            let distance_factor = (distance * 0.25).clamp(0.5, 12.0);
+            let step = move_dir.normalize() * move_speed * distance_factor * time.delta_secs();
             camera_rig.target += step;
         }
 
