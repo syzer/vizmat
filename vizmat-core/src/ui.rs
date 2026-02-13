@@ -32,38 +32,32 @@ pub(crate) struct LoadDefaultButton;
 
 // System to set up file upload UI
 pub(crate) fn setup_file_ui(mut commands: Commands) {
-    commands.spawn((
-        Text::new("Drag and drop an XYZ file here to visualize"),
-        TextFont {
-            font_size: 12.0,
-            ..default()
-        },
-        TextColor(Color::WHITE),
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(10.0),
-            right: Val::Px(10.0),
-            ..default()
-        },
-        FileUploadText,
-    ));
-
-    // Add button to load default structure
     commands
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
-                right: Val::Px(8.0),
-                top: Val::Px(18.0),
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(6.0),
+                top: Val::Px(0.0),
+                left: Val::Px(0.0),
+                right: Val::Px(0.0),
+                height: Val::Px(50.0),
+                padding: UiRect::axes(Val::Px(10.0), Val::Px(8.0)),
+                justify_content: JustifyContent::SpaceBetween,
+                align_items: AlignItems::Center,
                 ..default()
             },
-            BackgroundColor(Color::NONE),
+            BackgroundColor(Color::srgba(0.07, 0.09, 0.12, 0.95)),
         ))
-        .with_children(|parent| {
-            parent
-                .spawn((
+        .with_children(|top| {
+            top.spawn((
+                Node {
+                    column_gap: Val::Px(8.0),
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+                BackgroundColor(Color::NONE),
+            ))
+            .with_children(|row| {
+                row.spawn((
                     Button,
                     Node {
                         padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)),
@@ -76,7 +70,7 @@ pub(crate) fn setup_file_ui(mut commands: Commands) {
                 ))
                 .with_children(|button| {
                     button.spawn((
-                        Text::new("Load Default Structure"),
+                        Text::new("Load Default"),
                         TextFont {
                             font: default(),
                             font_size: 12.0,
@@ -85,6 +79,91 @@ pub(crate) fn setup_file_ui(mut commands: Commands) {
                         TextColor(Color::WHITE),
                     ));
                 });
+
+                row.spawn((
+                    Button,
+                    Node {
+                        padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)),
+                        border: UiRect::all(Val::Px(1.0)),
+                        ..default()
+                    },
+                    BorderColor(Color::srgb(0.3, 0.3, 0.3)),
+                    BackgroundColor(Color::srgb(0.15, 0.15, 0.15)),
+                    ResetCameraButton,
+                ))
+                .with_children(|button| {
+                    button.spawn((
+                        Text::new("Reset View"),
+                        TextFont {
+                            font: default(),
+                            font_size: 12.0,
+                            ..default()
+                        },
+                        TextColor(Color::WHITE),
+                    ));
+                });
+
+                row.spawn((
+                    Button,
+                    Node {
+                        padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)),
+                        border: UiRect::all(Val::Px(1.0)),
+                        ..default()
+                    },
+                    BorderColor(Color::srgb(0.3, 0.3, 0.3)),
+                    BackgroundColor(Color::srgb(0.15, 0.15, 0.15)),
+                    LightAttachmentButton { attached: false },
+                ))
+                .with_children(|button| {
+                    button.spawn((
+                        Text::new("Light: Static"),
+                        TextFont {
+                            font: default(),
+                            font_size: 12.0,
+                            ..default()
+                        },
+                        TextColor(Color::WHITE),
+                    ));
+                });
+            });
+
+            top.spawn((
+                Text::new("Drop XYZ file"),
+                TextFont {
+                    font_size: 12.0,
+                    ..default()
+                },
+                TextColor(Color::WHITE),
+                FileUploadText,
+            ));
+        });
+
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(0.0),
+                right: Val::Px(0.0),
+                bottom: Val::Px(0.0),
+                height: Val::Px(32.0),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                padding: UiRect::horizontal(Val::Px(10.0)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.07, 0.09, 0.12, 0.9)),
+        ))
+        .with_children(|bar| {
+            bar.spawn((
+                Text::new(
+                    "Doom-like: W/A/S/D move  Shift sprint  Q/E rotate  LMB rotate  RMB pan  Wheel zoom",
+                ),
+                TextFont {
+                    font_size: 11.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.86, 0.9, 0.95)),
+            ));
         });
 }
 
@@ -100,7 +179,7 @@ pub(crate) fn update_file_ui(
                 **text = format!("Loaded: {file_name}");
             }
         } else {
-            **text = "Drag and drop an XYZ file here to visualize".to_string();
+            **text = "Drop XYZ file".to_string();
         }
     }
 }
@@ -323,68 +402,8 @@ pub(crate) fn setup_light(mut commands: Commands, camera: Res<MainCameraEntity>)
 
 // Setup minimal UI with toggle buttons
 pub fn setup_buttons(mut commands: Commands) {
-    // buttons at top-left
-    commands
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(8.0),
-                top: Val::Px(8.0),
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(6.0),
-                ..default()
-            },
-            BackgroundColor(Color::NONE),
-        ))
-        .with_children(|parent| {
-            parent
-                .spawn((
-                    Button,
-                    Node {
-                        padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)),
-                        border: UiRect::all(Val::Px(1.0)),
-                        ..default()
-                    },
-                    BorderColor(Color::srgb(0.3, 0.3, 0.3)),
-                    BackgroundColor(Color::srgb(0.15, 0.15, 0.15)),
-                    LightAttachmentButton { attached: false },
-                ))
-                .with_children(|button| {
-                    button.spawn((
-                        Text::new("light not follow cam"),
-                        TextFont {
-                            font: default(),
-                            font_size: 12.0,
-                            ..default()
-                        },
-                        TextColor(Color::WHITE),
-                    ));
-                });
-
-            parent
-                .spawn((
-                    Button,
-                    Node {
-                        padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)),
-                        border: UiRect::all(Val::Px(1.0)),
-                        ..default()
-                    },
-                    BorderColor(Color::srgb(0.3, 0.3, 0.3)),
-                    BackgroundColor(Color::srgb(0.15, 0.15, 0.15)),
-                    ResetCameraButton,
-                ))
-                .with_children(|button| {
-                    button.spawn((
-                        Text::new("Reset Camera"),
-                        TextFont {
-                            font: default(),
-                            font_size: 12.0,
-                            ..default()
-                        },
-                        TextColor(Color::WHITE),
-                    ));
-                });
-        });
+    // HUD buttons are created in `setup_file_ui`.
+    let _ = &mut commands;
 }
 
 pub(crate) fn spawn_axis(
@@ -664,9 +683,9 @@ pub fn toggle_light_attachment(
                 for child in children.iter() {
                     if let Ok(mut text) = texts.get_mut(child) {
                         text.0 = if new_state {
-                            "light follow cam".into()
+                            "Light: Follow".into()
                         } else {
-                            "light not follow cam".into()
+                            "Light: Static".into()
                         };
                     }
                 }
