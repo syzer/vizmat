@@ -45,3 +45,60 @@ pub(crate) fn parse_xyz_content(contents: &str) -> Result<Crystal> {
 
     Ok(Crystal { atoms })
 }
+
+// Function to parse PDB file format from string content.
+// Reads ATOM/HETATM coordinate records and extracts element + xyz.
+pub(crate) fn parse_pdb_content(contents: &str) -> Result<Crystal> {
+    let mut atoms = Vec::new();
+
+    for line in contents.lines() {
+        if !(line.starts_with("ATOM  ") || line.starts_with("HETATM")) {
+            continue;
+        }
+        if line.len() < 54 {
+            continue;
+        }
+
+        let x: f32 = line[30..38]
+            .trim()
+            .parse()
+            .context("Failed to parse PDB x coordinate")?;
+        let y: f32 = line[38..46]
+            .trim()
+            .parse()
+            .context("Failed to parse PDB y coordinate")?;
+        let z: f32 = line[46..54]
+            .trim()
+            .parse()
+            .context("Failed to parse PDB z coordinate")?;
+
+        let mut element = if line.len() >= 78 {
+            line[76..78].trim().to_string()
+        } else {
+            String::new()
+        };
+
+        if element.is_empty() {
+            let atom_name = if line.len() >= 16 { &line[12..16] } else { "" };
+            element = atom_name
+                .trim()
+                .chars()
+                .take_while(|c| c.is_ascii_alphabetic())
+                .collect::<String>();
+        }
+
+        if element.is_empty() {
+            continue;
+        }
+
+        atoms.push(Atom { element, x, y, z });
+    }
+
+    if atoms.is_empty() {
+        return Err(anyhow::anyhow!(
+            "PDB file contains no ATOM/HETATM coordinates"
+        ));
+    }
+
+    Ok(Crystal { atoms })
+}

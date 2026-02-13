@@ -10,6 +10,7 @@ use bevy::render::view::RenderLayers;
 use bevy::ui::RelativeCursorPosition;
 
 use crate::constants::{get_element_color, get_element_size};
+use crate::io::FileStatusKind;
 use crate::structure::{infer_bonds_grid, AtomEntity, BondEntity, BondInferenceSettings, Crystal};
 
 const LAYER_GIZMO: RenderLayers = RenderLayers::layer(1);
@@ -379,7 +380,7 @@ pub(crate) fn setup_file_ui(mut commands: Commands, asset_server: Res<AssetServe
             ))
             .with_children(|right| {
                 right.spawn((
-                    Text::new("Drop XYZ file"),
+                    Text::new("Drop XYZ/PDB file"),
                     TextFont {
                         font_size: 12.0,
                         ..default()
@@ -455,17 +456,16 @@ pub(crate) fn setup_file_ui(mut commands: Commands, asset_server: Res<AssetServe
 // System to update file upload UI
 pub(crate) fn update_file_ui(
     file_drag_drop: Res<crate::io::FileDragDrop>,
-    mut text_query: Query<&mut Text, With<FileUploadText>>,
+    theme: Res<UiTheme>,
+    mut text_query: Query<(&mut Text, &mut TextColor), With<FileUploadText>>,
 ) {
-    if let Ok(mut text) = text_query.single_mut() {
-        if let Some(path) = file_drag_drop.dragged_file() {
-            if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                // Update the text content
-                **text = format!("Loaded: {file_name}");
-            }
-        } else {
-            **text = "Drop XYZ file".to_string();
-        }
+    if let Ok((mut text, mut color)) = text_query.single_mut() {
+        **text = file_drag_drop.status_message.clone();
+        *color = match file_drag_drop.status_kind {
+            FileStatusKind::Info => TextColor(theme_palette(theme.mode).text),
+            FileStatusKind::Success => TextColor(Color::srgb(0.20, 0.72, 0.34)),
+            FileStatusKind::Error => TextColor(Color::srgb(0.90, 0.20, 0.22)),
+        };
     }
 }
 

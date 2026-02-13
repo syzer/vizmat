@@ -19,7 +19,7 @@ pub(crate) mod structure;
 
 use crate::client::{poll_websocket_stream, setup_websocket_stream};
 use crate::io::{handle_file_drag_drop, load_dropped_file, update_crystal_from_file, FileDragDrop};
-use crate::parse::parse_xyz_content;
+use crate::parse::{parse_pdb_content, parse_xyz_content};
 use crate::structure::{update_crystal_system, BondInferenceSettings, UpdateStructure};
 use crate::ui::{
     apply_bond_tolerance_debounce, apply_theme_to_hud, auto_reset_view_on_crystal_change,
@@ -313,19 +313,30 @@ fn web_event_observer(trigger: Trigger<WebEvent>, mut file_drag_drop: ResMut<Fil
         mime_type,
     } = trigger.event();
 
-    if name.ends_with("xyz") {
+    if name.ends_with("xyz") || name.ends_with("pdb") {
         let contents = String::from_utf8_lossy(data);
-        match parse_xyz_content(&contents) {
+        let parsed = if name.ends_with("xyz") {
+            parse_xyz_content(&contents)
+        } else {
+            parse_pdb_content(&contents)
+        };
+        match parsed {
             Ok(crystal) => {
                 file_drag_drop.dragged_file = None;
                 file_drag_drop.loaded_crystal = Some(crystal);
+                file_drag_drop.status_message = format!("Loaded: {name}");
+                file_drag_drop.status_kind = crate::io::FileStatusKind::Success;
             }
             Err(e) => {
-                eprintln!("Failed to parse XYZ file: {}", e)
+                eprintln!("Failed to parse structure file: {}", e);
+                file_drag_drop.status_message = format!("Parse error: {e}");
+                file_drag_drop.status_kind = crate::io::FileStatusKind::Error;
             }
         }
     } else {
-        panic!()
+        file_drag_drop.status_message = "Unsupported file. Please drop .xyz or .pdb".to_string();
+        file_drag_drop.status_kind = crate::io::FileStatusKind::Error;
+        return;
     }
 
     info!("loaded file: '{name}'");
