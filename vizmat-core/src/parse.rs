@@ -38,6 +38,8 @@ pub(crate) fn parse_xyz_content(contents: &str) -> Result<Crystal> {
             x: parts[1].parse().context("Failed to parse x coordinate")?,
             y: parts[2].parse().context("Failed to parse y coordinate")?,
             z: parts[3].parse().context("Failed to parse z coordinate")?,
+            chain_id: None,
+            res_name: None,
         };
 
         atoms.push(atom);
@@ -72,6 +74,23 @@ pub(crate) fn parse_pdb_content(contents: &str) -> Result<Crystal> {
             .parse()
             .context("Failed to parse PDB z coordinate")?;
 
+        let atom_name = if line.len() >= 16 {
+            Some(line[12..16].trim().to_string())
+        } else {
+            None
+        };
+        let res_name = if line.len() >= 20 {
+            let v = line[17..20].trim();
+            (!v.is_empty()).then(|| v.to_string())
+        } else {
+            None
+        };
+        let chain_id = if line.len() >= 22 {
+            let v = line[21..22].trim();
+            (!v.is_empty()).then(|| v.to_string())
+        } else {
+            None
+        };
         let mut element = if line.len() >= 78 {
             line[76..78].trim().to_string()
         } else {
@@ -79,9 +98,9 @@ pub(crate) fn parse_pdb_content(contents: &str) -> Result<Crystal> {
         };
 
         if element.is_empty() {
-            let atom_name = if line.len() >= 16 { &line[12..16] } else { "" };
             element = atom_name
-                .trim()
+                .as_deref()
+                .unwrap_or("")
                 .chars()
                 .take_while(|c| c.is_ascii_alphabetic())
                 .collect::<String>();
@@ -91,7 +110,14 @@ pub(crate) fn parse_pdb_content(contents: &str) -> Result<Crystal> {
             continue;
         }
 
-        atoms.push(Atom { element, x, y, z });
+        atoms.push(Atom {
+            element,
+            x,
+            y,
+            z,
+            chain_id,
+            res_name,
+        });
     }
 
     if atoms.is_empty() {

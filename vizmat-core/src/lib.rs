@@ -20,13 +20,15 @@ pub(crate) mod structure;
 use crate::client::{poll_websocket_stream, setup_websocket_stream};
 use crate::io::{handle_file_drag_drop, load_dropped_file, update_crystal_from_file, FileDragDrop};
 use crate::parse::{parse_pdb_content, parse_xyz_content};
-use crate::structure::{update_crystal_system, BondInferenceSettings, UpdateStructure};
+use crate::structure::{
+    update_crystal_system, AtomColorMode, BondInferenceSettings, UpdateStructure,
+};
 use crate::ui::{
     apply_bond_tolerance_debounce, apply_theme_to_hud, auto_reset_view_on_crystal_change,
-    bond_tolerance_controls, camera_controls, handle_load_default_button, refresh_atoms_system,
-    reset_camera_button_interaction, setup_cameras, setup_file_ui, setup_light,
-    sync_gizmo_axis_rotation, toggle_light_attachment, toggle_theme_button, update_file_ui,
-    update_gizmo_viewport, update_scene,
+    bond_tolerance_controls, camera_controls, color_mode_button, handle_load_default_button,
+    handle_open_file_button, refresh_atoms_system, reset_camera_button_interaction, setup_cameras,
+    setup_file_ui, setup_light, sync_gizmo_axis_rotation, toggle_light_attachment,
+    toggle_theme_button, update_file_ui, update_gizmo_viewport, update_scene,
 };
 use crate::ui::{setup_buttons, spawn_axis};
 
@@ -253,6 +255,7 @@ pub fn run_app() {
             dom_drop_element_id: String::from("bevy-canvas"),
         })
         .init_resource::<FileDragDrop>()
+        .init_resource::<AtomColorMode>()
         .init_resource::<BondInferenceSettings>()
         .add_event::<UpdateStructure>()
         .add_event::<bevy::window::FileDragAndDrop>()
@@ -282,6 +285,8 @@ pub fn run_app() {
         )
         .add_systems(Update, reset_camera_button_interaction)
         .add_systems(Update, handle_load_default_button)
+        .add_systems(Update, handle_open_file_button)
+        .add_systems(Update, color_mode_button)
         .add_systems(Update, bond_tolerance_controls)
         .add_systems(
             Update,
