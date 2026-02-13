@@ -901,11 +901,16 @@ pub(crate) fn camera_controls(
                 yaw -= 1.0;
             }
             let rotate_speed = 1.8;
-            let mut offset = transform.translation - camera_rig.target;
-            offset = Quat::from_rotation_y(yaw * rotate_speed * time.delta_secs()) * offset;
-            transform.translation = camera_rig.target + offset;
-            transform.look_at(camera_rig.target, Vec3::Y);
-            camera_rig.distance = offset.length().max(MIN_DISTANCE);
+            let distance = (camera_rig.target - transform.translation)
+                .length()
+                .max(MIN_DISTANCE);
+            let mut forward = (camera_rig.target - transform.translation).normalize_or_zero();
+            if forward.length_squared() < f32::EPSILON {
+                forward = -transform.forward().normalize_or_zero();
+            }
+            let yaw_rotation = Quat::from_rotation_y(yaw * rotate_speed * time.delta_secs());
+            let rotated_forward = (yaw_rotation * forward).normalize_or_zero();
+            camera_rig.target = transform.translation + rotated_forward * distance;
         }
 
         if mouse_buttons.pressed(MouseButton::Right) {
