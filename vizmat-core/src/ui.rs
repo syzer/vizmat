@@ -9,10 +9,12 @@ use bevy::render::camera::Viewport;
 use bevy::render::view::RenderLayers;
 
 use crate::constants::{get_element_color, get_element_size};
-use crate::structure::{AtomEntity, Crystal};
+use crate::structure::{infer_bonds_grid, AtomEntity, BondEntity, Crystal};
 
 const LAYER_GIZMO: RenderLayers = RenderLayers::layer(1);
 const LAYER_CANVAS: RenderLayers = RenderLayers::layer(0);
+const GIZMO_VIEWPORT_SIZE_PX: u32 = 200;
+const GIZMO_VIEWPORT_MARGIN_PX: u32 = 10;
 
 #[derive(Component)]
 pub(crate) struct MainCamera;
@@ -588,12 +590,17 @@ pub(crate) fn update_scene(
     mut materials: ResMut<Assets<StandardMaterial>>,
     crystal: Option<Res<Crystal>>,
     atom_query: Query<Entity, With<AtomEntity>>,
+    bond_query: Query<Entity, With<BondEntity>>,
     molecule_root: Query<Entity, With<MoleculeRoot>>,
 ) {
     if let Some(crystal) = crystal {
         if crystal.is_changed() {
             // Clear existing atoms
             for entity in atom_query.iter() {
+                commands.entity(entity).despawn();
+            }
+            // Clear existing bonds
+            for entity in bond_query.iter() {
                 commands.entity(entity).despawn();
             }
 
@@ -623,11 +630,46 @@ fn spawn_atoms(
 ) {
     // Create a sphere mesh for atoms
     let sphere_mesh = meshes.add(Sphere::new(1.0));
+    let bond_mesh = meshes.add(Cylinder::new(1.0, 1.0));
 
     // Create materials for different elements
     let mut element_materials: HashMap<String, Handle<StandardMaterial>> = HashMap::new();
+    let bond_material = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.65, 0.68, 0.72),
+        metallic: 0.0,
+        perceptual_roughness: 0.8,
+        ..default()
+    });
+    let bonds = infer_bonds_grid(crystal);
 
     commands.entity(root_entity).with_children(|parent| {
+        for bond in &bonds {
+            let a = &crystal.atoms[bond.a];
+            let b = &crystal.atoms[bond.b];
+            let pa = Vec3::new(a.x, a.y, a.z);
+            let pb = Vec3::new(b.x, b.y, b.z);
+            let axis = pb - pa;
+            let length = axis.length();
+            if length <= 1e-5 {
+                continue;
+            }
+            let rotation = Quat::from_rotation_arc(Vec3::Y, axis / length);
+            let radius = match bond.order {
+                2 => 0.06,
+                3 => 0.05,
+                _ => 0.07,
+            };
+
+            parent.spawn((
+                Mesh3d(bond_mesh.clone()),
+                MeshMaterial3d(bond_material.clone()),
+                Transform::from_translation((pa + pb) * 0.5)
+                    .with_rotation(rotation)
+                    .with_scale(Vec3::new(radius, length, radius)),
+                BondEntity,
+            ));
+        }
+
         // Spawn atoms as 3D spheres
         for atom in &crystal.atoms {
             // Get or create material for this element
@@ -657,9 +699,14 @@ fn spawn_atoms(
 // System to set up the camera
 pub fn setup_cameras(mut commands: Commands, windows: Query<&Window>) {
     let window = windows.single().unwrap();
-    let viewport_size = UVec2::new(200, 200);
-    let bottom_left_y = window.physical_height() - viewport_size.y - 10;
-    let viewport_position = UVec2::new(10, bottom_left_y);
+    let viewport_size = UVec2::new(
+        GIZMO_VIEWPORT_SIZE_PX.min(window.physical_width()),
+        GIZMO_VIEWPORT_SIZE_PX.min(window.physical_height()),
+    );
+    let bottom_left_y = window
+        .physical_height()
+        .saturating_sub(viewport_size.y + GIZMO_VIEWPORT_MARGIN_PX);
+    let viewport_position = UVec2::new(GIZMO_VIEWPORT_MARGIN_PX, bottom_left_y);
 
     let camera_transform = Transform::from_xyz(5.0, 5.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y);
     let initial_translation = camera_transform.translation;
@@ -718,6 +765,35 @@ pub fn setup_cameras(mut commands: Commands, windows: Query<&Window>) {
         initial_translation,
         initial_rotation,
         initial_scale,
+    });
+}
+
+pub(crate) fn update_gizmo_viewport(
+    windows: Query<&Window>,
+    mut gizmo_camera_query: Query<&mut Camera, With<GizmoCamera>>,
+) {
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Ok(mut camera) = gizmo_camera_query.single_mut() else {
+        return;
+    };
+
+    let viewport_size = UVec2::new(
+        GIZMO_VIEWPORT_SIZE_PX.min(window.physical_width()),
+        GIZMO_VIEWPORT_SIZE_PX.min(window.physical_height()),
+    );
+    let viewport_position = UVec2::new(
+        GIZMO_VIEWPORT_MARGIN_PX,
+        window
+            .physical_height()
+            .saturating_sub(viewport_size.y + GIZMO_VIEWPORT_MARGIN_PX),
+    );
+
+    camera.viewport = Some(Viewport {
+        physical_position: viewport_position,
+        physical_size: viewport_size,
+        ..default()
     });
 }
 
@@ -823,6 +899,7 @@ pub fn refresh_atoms_system(
     mut commands: Commands,
     crystal: Option<Res<Crystal>>,
     atom_entities: Query<Entity, With<AtomEntity>>,
+    bond_entities: Query<Entity, With<BondEntity>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     molecule_root: Query<Entity, With<MoleculeRoot>>,
@@ -836,6 +913,10 @@ pub fn refresh_atoms_system(
 
     // Despawn all existing atoms
     for entity in atom_entities.iter() {
+        commands.entity(entity).despawn();
+    }
+    // Despawn all existing bonds
+    for entity in bond_entities.iter() {
         commands.entity(entity).despawn();
     }
 

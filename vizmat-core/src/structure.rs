@@ -1,4 +1,7 @@
 use bevy::prelude::*;
+use std::collections::HashMap;
+
+use crate::constants::get_covalent_radius;
 
 // Structure to represent an atom from XYZ file
 // `#` is a macro. no inheritance. close to python decorator. injecting on top of something.
@@ -23,6 +26,17 @@ pub struct Crystal {
 #[derive(Component)]
 pub struct AtomEntity;
 
+// Component to mark bond entities.
+#[derive(Component)]
+pub struct BondEntity;
+
+#[derive(Debug, Clone, Copy)]
+pub struct Bond {
+    pub a: usize,
+    pub b: usize,
+    pub order: u8,
+}
+
 // Event to update the structure with new atom positions
 #[derive(Event, Clone)]
 pub struct UpdateStructure {
@@ -39,4 +53,62 @@ pub fn update_crystal_system(
             crystal.atoms.clone_from(&event.atoms);
         }
     }
+}
+
+#[inline]
+fn bond_cutoff(a: &Atom, b: &Atom) -> f32 {
+    ((get_covalent_radius(&a.element) + get_covalent_radius(&b.element)) * 1.15).clamp(0.4, 2.4)
+}
+
+pub fn infer_bonds_grid(crystal: &Crystal) -> Vec<Bond> {
+    let atoms = &crystal.atoms;
+    if atoms.len() < 2 {
+        return Vec::new();
+    }
+
+    let mut max_radius = 0.0_f32;
+    for atom in atoms {
+        max_radius = max_radius.max(get_covalent_radius(&atom.element));
+    }
+    let cell_size = (max_radius * 2.0 * 1.15).clamp(1.2, 3.0);
+
+    let mut grid: HashMap<(i32, i32, i32), Vec<usize>> = HashMap::new();
+    let mut bonds = Vec::with_capacity(atoms.len().saturating_mul(2));
+
+    for (i, atom) in atoms.iter().enumerate() {
+        let cell = (
+            (atom.x / cell_size).floor() as i32,
+            (atom.y / cell_size).floor() as i32,
+            (atom.z / cell_size).floor() as i32,
+        );
+
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    let neighbor_cell = (cell.0 + dx, cell.1 + dy, cell.2 + dz);
+                    if let Some(candidates) = grid.get(&neighbor_cell) {
+                        for &j in candidates {
+                            let other = &atoms[j];
+                            let cutoff = bond_cutoff(atom, other);
+                            let ddx = atom.x - other.x;
+                            let ddy = atom.y - other.y;
+                            let ddz = atom.z - other.z;
+                            let dist_sq = ddx * ddx + ddy * ddy + ddz * ddz;
+                            if dist_sq <= cutoff * cutoff {
+                                bonds.push(Bond {
+                                    a: j,
+                                    b: i,
+                                    order: 1,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        grid.entry(cell).or_default().push(i);
+    }
+
+    bonds
 }

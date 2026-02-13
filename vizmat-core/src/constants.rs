@@ -35,3 +35,21 @@ pub(crate) fn get_element_size(element: &str) -> f32 {
         _ => 0.35,    // Default
     }
 }
+
+// Covalent radii in angstroms, used for distance-based bond inference.
+pub(crate) fn get_covalent_radius(element: &str) -> f32 {
+    match element.to_uppercase().as_str() {
+        "H" => 0.31,
+        "C" => 0.76,
+        "N" => 0.71,
+        "O" => 0.66,
+        "S" => 1.05,
+        "P" => 1.07,
+        "CL" => 1.02,
+        "BR" => 1.20,
+        "I" => 1.39,
+        "FE" => 1.24,
+        "ZN" => 1.22,
+        _ => 0.77, // Approximate generic covalent radius.
+    }
+}

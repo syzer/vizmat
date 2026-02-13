@@ -25,7 +25,7 @@ use crate::ui::{
     apply_theme_to_hud, auto_reset_view_on_crystal_change, camera_controls,
     handle_load_default_button, refresh_atoms_system, reset_camera_button_interaction,
     setup_cameras, setup_file_ui, setup_light, sync_gizmo_axis_rotation, toggle_light_attachment,
-    toggle_theme_button, update_file_ui, update_scene,
+    toggle_theme_button, update_file_ui, update_gizmo_viewport, update_scene,
 };
 use crate::ui::{setup_buttons, spawn_axis};
 
@@ -288,7 +288,12 @@ pub fn run_app() {
         )
         .add_systems(
             Update,
-            (camera_controls, sync_gizmo_axis_rotation, update_scene),
+            (
+                camera_controls,
+                sync_gizmo_axis_rotation,
+                update_gizmo_viewport,
+                update_scene,
+            ),
         )
         .add_observer(web_event_observer)
         .run();
