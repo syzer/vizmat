@@ -20,6 +20,19 @@ pub struct Crystal {
     pub atoms: Vec<Atom>,
 }
 
+#[derive(Resource, Clone, Copy)]
+pub struct BondInferenceSettings {
+    pub tolerance_scale: f32,
+}
+
+impl Default for BondInferenceSettings {
+    fn default() -> Self {
+        Self {
+            tolerance_scale: 1.15,
+        }
+    }
+}
+
 // XXX: entity is the id point to the thing consist of components
 
 // Component to mark atom entities
@@ -56,11 +69,12 @@ pub fn update_crystal_system(
 }
 
 #[inline]
-fn bond_cutoff(a: &Atom, b: &Atom) -> f32 {
-    ((get_covalent_radius(&a.element) + get_covalent_radius(&b.element)) * 1.15).clamp(0.4, 2.4)
+fn bond_cutoff(a: &Atom, b: &Atom, tolerance_scale: f32) -> f32 {
+    ((get_covalent_radius(&a.element) + get_covalent_radius(&b.element)) * tolerance_scale)
+        .clamp(0.4, 2.4)
 }
 
-pub fn infer_bonds_grid(crystal: &Crystal) -> Vec<Bond> {
+pub fn infer_bonds_grid(crystal: &Crystal, tolerance_scale: f32) -> Vec<Bond> {
     let atoms = &crystal.atoms;
     if atoms.len() < 2 {
         return Vec::new();
@@ -70,7 +84,7 @@ pub fn infer_bonds_grid(crystal: &Crystal) -> Vec<Bond> {
     for atom in atoms {
         max_radius = max_radius.max(get_covalent_radius(&atom.element));
     }
-    let cell_size = (max_radius * 2.0 * 1.15).clamp(1.2, 3.0);
+    let cell_size = (max_radius * 2.0 * tolerance_scale).clamp(1.2, 3.0);
 
     let mut grid: HashMap<(i32, i32, i32), Vec<usize>> = HashMap::new();
     let mut bonds = Vec::with_capacity(atoms.len().saturating_mul(2));
@@ -89,7 +103,7 @@ pub fn infer_bonds_grid(crystal: &Crystal) -> Vec<Bond> {
                     if let Some(candidates) = grid.get(&neighbor_cell) {
                         for &j in candidates {
                             let other = &atoms[j];
-                            let cutoff = bond_cutoff(atom, other);
+                            let cutoff = bond_cutoff(atom, other, tolerance_scale);
                             let ddx = atom.x - other.x;
                             let ddy = atom.y - other.y;
                             let ddz = atom.z - other.z;

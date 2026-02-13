@@ -9,7 +9,7 @@ use bevy::render::camera::Viewport;
 use bevy::render::view::RenderLayers;
 
 use crate::constants::{get_element_color, get_element_size};
-use crate::structure::{infer_bonds_grid, AtomEntity, BondEntity, Crystal};
+use crate::structure::{infer_bonds_grid, AtomEntity, BondEntity, BondInferenceSettings, Crystal};
 
 const LAYER_GIZMO: RenderLayers = RenderLayers::layer(1);
 const LAYER_CANVAS: RenderLayers = RenderLayers::layer(0);
@@ -56,6 +56,15 @@ pub(crate) struct HudButtonLabel;
 
 #[derive(Component)]
 pub(crate) struct HudHelpText;
+
+#[derive(Component)]
+pub(crate) struct BondToleranceDecreaseButton;
+
+#[derive(Component)]
+pub(crate) struct BondToleranceIncreaseButton;
+
+#[derive(Component)]
+pub(crate) struct BondToleranceText;
 
 #[derive(Resource, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ThemeMode {
@@ -284,6 +293,70 @@ pub(crate) fn setup_file_ui(mut commands: Commands, asset_server: Res<AssetServe
                         HudButtonLabel,
                     ));
                 });
+
+                row.spawn((
+                    Button,
+                    Node {
+                        width: Val::Px(24.0),
+                        height: Val::Px(24.0),
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        border: UiRect::all(Val::Px(1.0)),
+                        ..default()
+                    },
+                    BorderColor(p.border),
+                    BackgroundColor(p.button_bg),
+                    BondToleranceDecreaseButton,
+                    HudButton,
+                ))
+                .with_children(|button| {
+                    button.spawn((
+                        Text::new("-"),
+                        TextFont {
+                            font_size: 14.0,
+                            ..default()
+                        },
+                        TextColor(p.text),
+                        HudButtonLabel,
+                    ));
+                });
+
+                row.spawn((
+                    Text::new("Bonds 1.15"),
+                    TextFont {
+                        font_size: 12.0,
+                        ..default()
+                    },
+                    TextColor(p.text),
+                    BondToleranceText,
+                ));
+
+                row.spawn((
+                    Button,
+                    Node {
+                        width: Val::Px(24.0),
+                        height: Val::Px(24.0),
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        border: UiRect::all(Val::Px(1.0)),
+                        ..default()
+                    },
+                    BorderColor(p.border),
+                    BackgroundColor(p.button_bg),
+                    BondToleranceIncreaseButton,
+                    HudButton,
+                ))
+                .with_children(|button| {
+                    button.spawn((
+                        Text::new("+"),
+                        TextFont {
+                            font_size: 14.0,
+                            ..default()
+                        },
+                        TextColor(p.text),
+                        HudButtonLabel,
+                    ));
+                });
             });
 
             top.spawn((
@@ -382,6 +455,58 @@ pub(crate) fn update_file_ui(
             }
         } else {
             **text = "Drop XYZ file".to_string();
+        }
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub(crate) fn bond_tolerance_controls(
+    mut settings: ResMut<BondInferenceSettings>,
+    mut decrease_query: Query<
+        (&Interaction, &mut BackgroundColor),
+        (Changed<Interaction>, With<BondToleranceDecreaseButton>),
+    >,
+    mut increase_query: Query<
+        (&Interaction, &mut BackgroundColor),
+        (Changed<Interaction>, With<BondToleranceIncreaseButton>),
+    >,
+    mut text_query: Query<&mut Text, With<BondToleranceText>>,
+    theme: Res<UiTheme>,
+) {
+    let mut changed = false;
+    for (interaction, mut color) in &mut decrease_query {
+        match *interaction {
+            Interaction::Pressed => {
+                settings.tolerance_scale = (settings.tolerance_scale - 0.02).clamp(1.00, 1.35);
+                *color = BackgroundColor(themed_button_bg(theme.mode, Interaction::Pressed));
+                changed = true;
+            }
+            Interaction::Hovered => {
+                *color = BackgroundColor(themed_button_bg(theme.mode, Interaction::Hovered));
+            }
+            Interaction::None => {
+                *color = BackgroundColor(themed_button_bg(theme.mode, Interaction::None));
+            }
+        }
+    }
+    for (interaction, mut color) in &mut increase_query {
+        match *interaction {
+            Interaction::Pressed => {
+                settings.tolerance_scale = (settings.tolerance_scale + 0.02).clamp(1.00, 1.35);
+                *color = BackgroundColor(themed_button_bg(theme.mode, Interaction::Pressed));
+                changed = true;
+            }
+            Interaction::Hovered => {
+                *color = BackgroundColor(themed_button_bg(theme.mode, Interaction::Hovered));
+            }
+            Interaction::None => {
+                *color = BackgroundColor(themed_button_bg(theme.mode, Interaction::None));
+            }
+        }
+    }
+    if changed {
+        if let Ok(mut text) = text_query.single_mut() {
+            text.0 = format!("Bonds {:.2}", settings.tolerance_scale);
         }
     }
 }
@@ -584,17 +709,19 @@ pub(crate) fn handle_load_default_button(
 }
 
 // System to respawn atoms when crystal changes
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn update_scene(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     crystal: Option<Res<Crystal>>,
+    bond_settings: Res<BondInferenceSettings>,
     atom_query: Query<Entity, With<AtomEntity>>,
     bond_query: Query<Entity, With<BondEntity>>,
     molecule_root: Query<Entity, With<MoleculeRoot>>,
 ) {
     if let Some(crystal) = crystal {
-        if crystal.is_changed() {
+        if crystal.is_changed() || bond_settings.is_changed() {
             // Clear existing atoms
             for entity in atom_query.iter() {
                 commands.entity(entity).despawn();
@@ -611,6 +738,7 @@ pub(crate) fn update_scene(
                     &mut meshes,
                     &mut materials,
                     &crystal,
+                    &bond_settings,
                     root_entity,
                 );
             }
@@ -626,6 +754,7 @@ fn spawn_atoms(
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
     crystal: &Crystal,
+    bond_settings: &BondInferenceSettings,
     root_entity: Entity,
 ) {
     // Create a sphere mesh for atoms
@@ -640,7 +769,7 @@ fn spawn_atoms(
         perceptual_roughness: 0.8,
         ..default()
     });
-    let bonds = infer_bonds_grid(crystal);
+    let bonds = infer_bonds_grid(crystal, bond_settings.tolerance_scale);
 
     commands.entity(root_entity).with_children(|parent| {
         for bond in &bonds {
@@ -895,9 +1024,11 @@ pub(crate) fn sync_gizmo_axis_rotation(
 }
 
 // System to refresh atoms when Crystal resource changes
+#[allow(clippy::too_many_arguments)]
 pub fn refresh_atoms_system(
     mut commands: Commands,
     crystal: Option<Res<Crystal>>,
+    bond_settings: Res<BondInferenceSettings>,
     atom_entities: Query<Entity, With<AtomEntity>>,
     bond_entities: Query<Entity, With<BondEntity>>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -906,7 +1037,7 @@ pub fn refresh_atoms_system(
 ) {
     // Only run when Crystal resource changes
     if let Some(ref crystal) = crystal {
-        if !crystal.is_changed() {
+        if !crystal.is_changed() && !bond_settings.is_changed() {
             return;
         }
     }
@@ -927,6 +1058,7 @@ pub fn refresh_atoms_system(
                 &mut meshes,
                 &mut materials,
                 &crystal,
+                &bond_settings,
                 root_entity,
             );
         }
