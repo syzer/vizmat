@@ -30,8 +30,102 @@ pub(crate) struct FileUploadText;
 #[derive(Component)]
 pub(crate) struct LoadDefaultButton;
 
+#[derive(Component)]
+pub(crate) struct ThemeToggleButton;
+
+#[derive(Component)]
+pub(crate) struct ThemeToggleIcon;
+
+#[derive(Component)]
+pub(crate) struct HudTopBar;
+
+#[derive(Component)]
+pub(crate) struct HudBottomBar;
+
+#[derive(Component)]
+pub(crate) struct HudButton;
+
+#[derive(Component)]
+pub(crate) struct HudButtonLabel;
+
+#[derive(Component)]
+pub(crate) struct HudHelpText;
+
+#[derive(Resource, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ThemeMode {
+    Dark,
+    Light,
+}
+
+#[derive(Resource, Clone, Copy)]
+pub(crate) struct UiTheme {
+    pub(crate) mode: ThemeMode,
+}
+
+impl Default for UiTheme {
+    fn default() -> Self {
+        Self {
+            mode: ThemeMode::Dark,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ThemePalette {
+    scene_bg: Color,
+    bar_bg: Color,
+    bar_bg_alt: Color,
+    button_bg: Color,
+    button_hover: Color,
+    button_pressed: Color,
+    border: Color,
+    text: Color,
+    text_muted: Color,
+}
+
+fn theme_palette(mode: ThemeMode) -> ThemePalette {
+    match mode {
+        ThemeMode::Dark => ThemePalette {
+            scene_bg: Color::srgb(0.02, 0.03, 0.05),
+            bar_bg: Color::srgba(0.07, 0.09, 0.12, 0.95),
+            bar_bg_alt: Color::srgba(0.07, 0.09, 0.12, 0.90),
+            button_bg: Color::srgb(0.15, 0.15, 0.15),
+            button_hover: Color::srgb(0.20, 0.20, 0.20),
+            button_pressed: Color::srgb(0.25, 0.25, 0.25),
+            border: Color::srgb(0.30, 0.30, 0.30),
+            text: Color::WHITE,
+            text_muted: Color::srgb(0.86, 0.90, 0.95),
+        },
+        ThemeMode::Light => ThemePalette {
+            scene_bg: Color::srgb(0.96, 0.97, 0.99),
+            bar_bg: Color::srgba(0.94, 0.95, 0.97, 0.98),
+            bar_bg_alt: Color::srgba(0.92, 0.93, 0.96, 0.96),
+            button_bg: Color::srgb(0.95, 0.95, 0.97),
+            button_hover: Color::srgb(0.90, 0.91, 0.94),
+            button_pressed: Color::srgb(0.84, 0.86, 0.90),
+            border: Color::srgb(0.74, 0.76, 0.81),
+            text: Color::srgb(0.12, 0.14, 0.18),
+            text_muted: Color::srgb(0.18, 0.22, 0.30),
+        },
+    }
+}
+
+fn themed_button_bg(mode: ThemeMode, interaction: Interaction) -> Color {
+    let p = theme_palette(mode);
+    match interaction {
+        Interaction::Pressed => p.button_pressed,
+        Interaction::Hovered => p.button_hover,
+        Interaction::None => p.button_bg,
+    }
+}
+
 // System to set up file upload UI
-pub(crate) fn setup_file_ui(mut commands: Commands) {
+pub(crate) fn setup_file_ui(mut commands: Commands, asset_server: Res<AssetServer>) {
+    commands.insert_resource(UiTheme::default());
+    let p = theme_palette(ThemeMode::Dark);
+    let icon_font: Handle<Font> = asset_server.load("fonts/fa-solid-900.ttf");
+    commands.insert_resource(ClearColor(p.scene_bg));
+
     commands
         .spawn((
             Node {
@@ -45,7 +139,8 @@ pub(crate) fn setup_file_ui(mut commands: Commands) {
                 align_items: AlignItems::Center,
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.07, 0.09, 0.12, 0.95)),
+            BackgroundColor(p.bar_bg),
+            HudTopBar,
         ))
         .with_children(|top| {
             top.spawn((
@@ -64,9 +159,10 @@ pub(crate) fn setup_file_ui(mut commands: Commands) {
                         border: UiRect::all(Val::Px(1.0)),
                         ..default()
                     },
-                    BorderColor(Color::srgb(0.3, 0.3, 0.3)),
-                    BackgroundColor(Color::srgb(0.15, 0.15, 0.15)),
+                    BorderColor(p.border),
+                    BackgroundColor(p.button_bg),
                     LoadDefaultButton,
+                    HudButton,
                 ))
                 .with_children(|button| {
                     button.spawn((
@@ -76,7 +172,8 @@ pub(crate) fn setup_file_ui(mut commands: Commands) {
                             font_size: 12.0,
                             ..default()
                         },
-                        TextColor(Color::WHITE),
+                        TextColor(p.text),
+                        HudButtonLabel,
                     ));
                 });
 
@@ -87,9 +184,10 @@ pub(crate) fn setup_file_ui(mut commands: Commands) {
                         border: UiRect::all(Val::Px(1.0)),
                         ..default()
                     },
-                    BorderColor(Color::srgb(0.3, 0.3, 0.3)),
-                    BackgroundColor(Color::srgb(0.15, 0.15, 0.15)),
+                    BorderColor(p.border),
+                    BackgroundColor(p.button_bg),
                     ResetCameraButton,
+                    HudButton,
                 ))
                 .with_children(|button| {
                     button.spawn((
@@ -99,7 +197,8 @@ pub(crate) fn setup_file_ui(mut commands: Commands) {
                             font_size: 12.0,
                             ..default()
                         },
-                        TextColor(Color::WHITE),
+                        TextColor(p.text),
+                        HudButtonLabel,
                     ));
                 });
 
@@ -110,9 +209,10 @@ pub(crate) fn setup_file_ui(mut commands: Commands) {
                         border: UiRect::all(Val::Px(1.0)),
                         ..default()
                     },
-                    BorderColor(Color::srgb(0.3, 0.3, 0.3)),
-                    BackgroundColor(Color::srgb(0.15, 0.15, 0.15)),
+                    BorderColor(p.border),
+                    BackgroundColor(p.button_bg),
                     LightAttachmentButton { attached: false },
+                    HudButton,
                 ))
                 .with_children(|button| {
                     button.spawn((
@@ -122,20 +222,62 @@ pub(crate) fn setup_file_ui(mut commands: Commands) {
                             font_size: 12.0,
                             ..default()
                         },
-                        TextColor(Color::WHITE),
+                        TextColor(p.text),
+                        HudButtonLabel,
                     ));
                 });
             });
 
             top.spawn((
-                Text::new("Drop XYZ file"),
-                TextFont {
-                    font_size: 12.0,
+                Node {
+                    column_gap: Val::Px(10.0),
+                    align_items: AlignItems::Center,
                     ..default()
                 },
-                TextColor(Color::WHITE),
-                FileUploadText,
-            ));
+                BackgroundColor(Color::NONE),
+            ))
+            .with_children(|right| {
+                right.spawn((
+                    Text::new("Drop XYZ file"),
+                    TextFont {
+                        font_size: 12.0,
+                        ..default()
+                    },
+                    TextColor(p.text),
+                    FileUploadText,
+                ));
+
+                right
+                    .spawn((
+                        Button,
+                        Node {
+                            width: Val::Px(30.0),
+                            height: Val::Px(30.0),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            border: UiRect::all(Val::Px(1.0)),
+                            ..default()
+                        },
+                        BorderRadius::MAX,
+                        BorderColor(p.border),
+                        BackgroundColor(p.button_bg),
+                        ThemeToggleButton,
+                        HudButton,
+                    ))
+                    .with_children(|button| {
+                        button.spawn((
+                            Text::new("\u{f186}"),
+                            TextFont {
+                                font: icon_font.clone(),
+                                font_size: 16.0,
+                                ..default()
+                            },
+                            TextColor(p.text),
+                            HudButtonLabel,
+                            ThemeToggleIcon,
+                        ));
+                    });
+            });
         });
 
     commands
@@ -151,7 +293,8 @@ pub(crate) fn setup_file_ui(mut commands: Commands) {
                 padding: UiRect::horizontal(Val::Px(10.0)),
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.07, 0.09, 0.12, 0.9)),
+            BackgroundColor(p.bar_bg_alt),
+            HudBottomBar,
         ))
         .with_children(|bar| {
             bar.spawn((
@@ -162,7 +305,8 @@ pub(crate) fn setup_file_ui(mut commands: Commands) {
                     font_size: 11.0,
                     ..default()
                 },
-                TextColor(Color::srgb(0.86, 0.9, 0.95)),
+                TextColor(p.text_muted),
+                HudHelpText,
             ));
         });
 }
@@ -181,6 +325,82 @@ pub(crate) fn update_file_ui(
         } else {
             **text = "Drop XYZ file".to_string();
         }
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub(crate) fn toggle_theme_button(
+    mut theme: ResMut<UiTheme>,
+    mut interaction_query: Query<
+        (&Interaction, &mut BackgroundColor, &Children),
+        (Changed<Interaction>, With<ThemeToggleButton>),
+    >,
+    mut texts: Query<&mut Text, With<ThemeToggleIcon>>,
+) {
+    for (interaction, mut color, children) in &mut interaction_query {
+        match *interaction {
+            Interaction::Pressed => {
+                theme.mode = match theme.mode {
+                    ThemeMode::Dark => ThemeMode::Light,
+                    ThemeMode::Light => ThemeMode::Dark,
+                };
+                *color = BackgroundColor(themed_button_bg(theme.mode, Interaction::Pressed));
+                for child in children.iter() {
+                    if let Ok(mut text) = texts.get_mut(child) {
+                        text.0 = match theme.mode {
+                            ThemeMode::Dark => "\u{f186}".into(),
+                            ThemeMode::Light => "\u{f185}".into(),
+                        };
+                    }
+                }
+            }
+            Interaction::Hovered => {
+                *color = BackgroundColor(themed_button_bg(theme.mode, Interaction::Hovered));
+            }
+            Interaction::None => {
+                *color = BackgroundColor(themed_button_bg(theme.mode, Interaction::None));
+            }
+        }
+    }
+}
+
+pub(crate) fn apply_theme_to_hud(
+    theme: Res<UiTheme>,
+    mut clear_color: ResMut<ClearColor>,
+    mut themed_bg_queries: ParamSet<(
+        Query<&mut BackgroundColor, With<HudTopBar>>,
+        Query<&mut BackgroundColor, With<HudBottomBar>>,
+        Query<(&Interaction, &mut BackgroundColor, &mut BorderColor), With<HudButton>>,
+    )>,
+    mut themed_text_queries: ParamSet<(
+        Query<&mut TextColor, With<HudButtonLabel>>,
+        Query<&mut TextColor, (With<FileUploadText>, Without<HudButtonLabel>)>,
+        Query<&mut TextColor, With<HudHelpText>>,
+    )>,
+) {
+    if !theme.is_changed() {
+        return;
+    }
+    let p = theme_palette(theme.mode);
+    clear_color.0 = p.scene_bg;
+    for mut bg in &mut themed_bg_queries.p0() {
+        *bg = BackgroundColor(p.bar_bg);
+    }
+    for mut bg in &mut themed_bg_queries.p1() {
+        *bg = BackgroundColor(p.bar_bg_alt);
+    }
+    for (interaction, mut bg, mut border) in &mut themed_bg_queries.p2() {
+        *bg = BackgroundColor(themed_button_bg(theme.mode, *interaction));
+        *border = BorderColor(p.border);
+    }
+    for mut color in &mut themed_text_queries.p0() {
+        *color = TextColor(p.text);
+    }
+    if let Ok(mut color) = themed_text_queries.p1().single_mut() {
+        *color = TextColor(p.text);
+    }
+    for mut color in &mut themed_text_queries.p2() {
+        *color = TextColor(p.text_muted);
     }
 }
 
@@ -229,21 +449,22 @@ pub(crate) fn handle_load_default_button(
     >,
     mut commands: Commands,
     crystal: Option<Res<Crystal>>,
+    theme: Res<UiTheme>,
 ) {
     for (interaction, mut color) in &mut interaction_query {
         match *interaction {
             Interaction::Pressed => {
-                *color = BackgroundColor(Color::srgb(0.35, 0.35, 0.35));
+                *color = BackgroundColor(themed_button_bg(theme.mode, Interaction::Pressed));
                 // Load default water molecule
                 if crystal.is_none() {
                     crate::io::load_default_crystal(commands.reborrow());
                 }
             }
             Interaction::Hovered => {
-                *color = BackgroundColor(Color::srgb(0.25, 0.25, 0.25));
+                *color = BackgroundColor(themed_button_bg(theme.mode, Interaction::Hovered));
             }
             Interaction::None => {
-                *color = BackgroundColor(Color::srgb(0.15, 0.15, 0.15));
+                *color = BackgroundColor(themed_button_bg(theme.mode, Interaction::None));
             }
         }
     }
@@ -643,11 +864,12 @@ pub fn toggle_light_attachment(
     >,
     q_trans: Query<&GlobalTransform>,
     mut texts: Query<&mut Text>,
+    theme: Res<UiTheme>,
 ) {
     for (interaction, mut background, mut button_state, children) in &mut interactions {
         match interaction {
             Interaction::Pressed => {
-                *background = BackgroundColor(Color::srgb(0.25, 0.25, 0.25));
+                *background = BackgroundColor(themed_button_bg(theme.mode, Interaction::Pressed));
 
                 let old_state = button_state.attached;
                 let new_state = !button_state.attached;
@@ -691,10 +913,10 @@ pub fn toggle_light_attachment(
                 }
             }
             Interaction::Hovered => {
-                *background = BackgroundColor(Color::srgb(0.2, 0.2, 0.2));
+                *background = BackgroundColor(themed_button_bg(theme.mode, Interaction::Hovered));
             }
             Interaction::None => {
-                *background = BackgroundColor(Color::srgb(0.15, 0.15, 0.15));
+                *background = BackgroundColor(themed_button_bg(theme.mode, Interaction::None));
             }
         }
     }
@@ -711,11 +933,12 @@ pub fn reset_camera_button_interaction(
     mut camera_query: Query<&mut Transform, (With<Camera3d>, Without<MoleculeRoot>)>,
     mut camera_rig: Option<ResMut<CameraRig>>,
     mut molecule_query: Query<&mut Transform, (With<MoleculeRoot>, Without<Camera3d>)>,
+    theme: Res<UiTheme>,
 ) {
     for (interaction, mut background) in &mut interactions {
         match *interaction {
             Interaction::Pressed => {
-                *background = BackgroundColor(Color::srgb(0.25, 0.25, 0.25));
+                *background = BackgroundColor(themed_button_bg(theme.mode, Interaction::Pressed));
 
                 if let (Some(camera_entity), Some(rig)) =
                     (camera_entity.as_deref(), camera_rig.as_deref_mut())
@@ -735,10 +958,10 @@ pub fn reset_camera_button_interaction(
                 }
             }
             Interaction::Hovered => {
-                *background = BackgroundColor(Color::srgb(0.2, 0.2, 0.2));
+                *background = BackgroundColor(themed_button_bg(theme.mode, Interaction::Hovered));
             }
             Interaction::None => {
-                *background = BackgroundColor(Color::srgb(0.15, 0.15, 0.15));
+                *background = BackgroundColor(themed_button_bg(theme.mode, Interaction::None));
             }
         }
     }
