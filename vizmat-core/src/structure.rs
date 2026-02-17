@@ -20,6 +20,7 @@ pub struct Atom {
 #[derive(Resource, Clone)]
 pub struct Crystal {
     pub atoms: Vec<Atom>,
+    pub bonds: Option<Vec<Bond>>,
 }
 
 #[derive(Resource, Clone, Copy)]
@@ -66,6 +67,13 @@ pub struct Bond {
     pub a: usize,
     pub b: usize,
     pub order: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BondSourceMode {
+    Disabled,
+    File,
+    Inferred,
 }
 
 // Event to update the structure with new atom positions
@@ -143,4 +151,26 @@ pub fn infer_bonds_grid(crystal: &Crystal, tolerance_scale: f32) -> Vec<Bond> {
     }
 
     bonds
+}
+
+impl Crystal {
+    pub fn has_explicit_bonds(&self) -> bool {
+        self.bonds.as_ref().is_some_and(|b| !b.is_empty())
+    }
+}
+
+pub fn resolve_bonds(
+    crystal: &Crystal,
+    settings: &BondInferenceSettings,
+) -> (Vec<Bond>, BondSourceMode) {
+    if !settings.enabled {
+        return (Vec::new(), BondSourceMode::Disabled);
+    }
+    if let Some(file_bonds) = crystal.bonds.as_ref().filter(|b| !b.is_empty()) {
+        return (file_bonds.clone(), BondSourceMode::File);
+    }
+    (
+        infer_bonds_grid(crystal, settings.tolerance_scale),
+        BondSourceMode::Inferred,
+    )
 }

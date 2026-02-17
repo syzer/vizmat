@@ -14,12 +14,14 @@ pub(crate) mod ui;
 
 pub(crate) mod client;
 pub(crate) mod constants;
-pub(crate) mod parse;
+pub(crate) mod formats;
 pub(crate) mod structure;
 
 use crate::client::{poll_websocket_stream, setup_websocket_stream};
+use crate::formats::{
+    is_supported_extension, parse_structure_by_extension, SUPPORTED_EXTENSIONS_HELP,
+};
 use crate::io::{handle_file_drag_drop, load_dropped_file, update_crystal_from_file, FileDragDrop};
-use crate::parse::{parse_pdb_content, parse_xyz_content};
 use crate::structure::{
     update_crystal_system, AtomColorMode, BondInferenceSettings, UpdateStructure,
 };
@@ -318,13 +320,10 @@ fn web_event_observer(trigger: Trigger<WebEvent>, mut file_drag_drop: ResMut<Fil
         mime_type,
     } = trigger.event();
 
-    if name.ends_with("xyz") || name.ends_with("pdb") {
+    let ext = name.rsplit('.').next().unwrap_or_default();
+    if is_supported_extension(ext) {
         let contents = String::from_utf8_lossy(data);
-        let parsed = if name.ends_with("xyz") {
-            parse_xyz_content(&contents)
-        } else {
-            parse_pdb_content(&contents)
-        };
+        let parsed = parse_structure_by_extension(ext, &contents);
         match parsed {
             Ok(crystal) => {
                 file_drag_drop.dragged_file = None;
@@ -339,7 +338,10 @@ fn web_event_observer(trigger: Trigger<WebEvent>, mut file_drag_drop: ResMut<Fil
             }
         }
     } else {
-        file_drag_drop.status_message = "Unsupported file. Please drop .xyz or .pdb".to_string();
+        file_drag_drop.status_message = format!(
+            "Unsupported file. Please drop {}",
+            SUPPORTED_EXTENSIONS_HELP
+        );
         file_drag_drop.status_kind = crate::io::FileStatusKind::Error;
         return;
     }
