@@ -100,6 +100,10 @@ Cyclosporin (Bond Env):
 
 ![Cyclosporin Bond Env](assets/screenshots/cyclosporin-bond-env.png)
 
+PDB (Residue + Selected Atom Legend):
+
+![PDB Residue Legend](assets/screenshots/pdb-residue-legend.png)
+
 ## Roadmap
 
 * [x] Initial Bevy setup
