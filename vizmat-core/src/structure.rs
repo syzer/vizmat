@@ -52,6 +52,7 @@ pub enum AtomColorMode {
     Residue,
     Ring,
     BondEnv,
+    Functional,
 }
 
 // XXX: entity is the id point to the thing consist of components

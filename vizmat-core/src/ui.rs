@@ -198,7 +198,136 @@ fn color_mode_label(mode: AtomColorMode) -> &'static str {
         AtomColorMode::Residue => "Color: Residue",
         AtomColorMode::Ring => "Color: Ring",
         AtomColorMode::BondEnv => "Color: Bond Env",
+        AtomColorMode::Functional => "Color: Functional",
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum FunctionalGroupClass {
+    Other,
+    Carbonyl,
+    Hydroxyl,
+    Amine,
+    Amide,
+    Phosphate,
+    Halogen,
+    AromaticLike,
+}
+
+fn functional_group_color(group: FunctionalGroupClass) -> Color {
+    match group {
+        FunctionalGroupClass::Carbonyl => Color::srgb(0.88, 0.34, 0.30),
+        FunctionalGroupClass::Hydroxyl => Color::srgb(0.22, 0.72, 0.95),
+        FunctionalGroupClass::Amine => Color::srgb(0.35, 0.52, 0.98),
+        FunctionalGroupClass::Amide => Color::srgb(0.55, 0.40, 0.92),
+        FunctionalGroupClass::Phosphate => Color::srgb(0.95, 0.66, 0.24),
+        FunctionalGroupClass::Halogen => Color::srgb(0.27, 0.80, 0.58),
+        FunctionalGroupClass::AromaticLike => Color::srgb(0.94, 0.78, 0.28),
+        FunctionalGroupClass::Other => Color::srgb(0.62, 0.64, 0.68),
+    }
+}
+
+fn functional_group_key(group: FunctionalGroupClass) -> &'static str {
+    match group {
+        FunctionalGroupClass::Carbonyl => "carbonyl",
+        FunctionalGroupClass::Hydroxyl => "hydroxyl",
+        FunctionalGroupClass::Amine => "amine",
+        FunctionalGroupClass::Amide => "amide",
+        FunctionalGroupClass::Phosphate => "phosphate",
+        FunctionalGroupClass::Halogen => "halogen",
+        FunctionalGroupClass::AromaticLike => "aromatic",
+        FunctionalGroupClass::Other => "other",
+    }
+}
+
+fn build_bond_adjacency(
+    atom_count: usize,
+    bonds: &[crate::structure::Bond],
+) -> Vec<Vec<(usize, u8)>> {
+    let mut adjacency = vec![Vec::new(); atom_count];
+    for bond in bonds {
+        if bond.a >= atom_count || bond.b >= atom_count || bond.a == bond.b {
+            continue;
+        }
+        adjacency[bond.a].push((bond.b, bond.order));
+        adjacency[bond.b].push((bond.a, bond.order));
+    }
+    adjacency
+}
+
+fn is_carbonyl_carbon(
+    atom_index: usize,
+    elements: &[String],
+    adjacency: &[Vec<(usize, u8)>],
+) -> bool {
+    if elements.get(atom_index).map(String::as_str) != Some("C") {
+        return false;
+    }
+    adjacency[atom_index]
+        .iter()
+        .any(|(n, order)| *order >= 2 && elements.get(*n).map(String::as_str) == Some("O"))
+}
+
+fn compute_functional_groups(
+    crystal: &Crystal,
+    bonds: &[crate::structure::Bond],
+    ring_atoms: &[bool],
+    bond_env_atoms: &[bool],
+) -> Vec<FunctionalGroupClass> {
+    let atom_count = crystal.atoms.len();
+    let elements = crystal
+        .atoms
+        .iter()
+        .map(|atom| atom.element.to_ascii_uppercase())
+        .collect::<Vec<_>>();
+    let adjacency = build_bond_adjacency(atom_count, bonds);
+    let carbonyl_carbons = (0..atom_count)
+        .map(|idx| is_carbonyl_carbon(idx, &elements, &adjacency))
+        .collect::<Vec<_>>();
+
+    (0..atom_count)
+        .map(|idx| {
+            let el = elements[idx].as_str();
+            if matches!(el, "F" | "CL" | "BR" | "I") {
+                return FunctionalGroupClass::Halogen;
+            }
+            if el == "P" {
+                return FunctionalGroupClass::Phosphate;
+            }
+            if el == "C" && carbonyl_carbons[idx] {
+                return FunctionalGroupClass::Carbonyl;
+            }
+            if el == "O" {
+                let bonded_to_p = adjacency[idx]
+                    .iter()
+                    .any(|(n, _)| elements.get(*n).map(String::as_str) == Some("P"));
+                if bonded_to_p {
+                    return FunctionalGroupClass::Phosphate;
+                }
+                let bonded_to_h = adjacency[idx].iter().any(|(n, order)| {
+                    *order == 1 && elements.get(*n).map(String::as_str) == Some("H")
+                });
+                if bonded_to_h {
+                    return FunctionalGroupClass::Hydroxyl;
+                }
+            }
+            if el == "N" {
+                let amide_like = adjacency[idx].iter().any(|(n, order)| {
+                    *order == 1 && carbonyl_carbons.get(*n).copied().unwrap_or(false)
+                });
+                if amide_like {
+                    return FunctionalGroupClass::Amide;
+                }
+                return FunctionalGroupClass::Amine;
+            }
+            if ring_atoms.get(idx).copied().unwrap_or(false)
+                && bond_env_atoms.get(idx).copied().unwrap_or(false)
+            {
+                return FunctionalGroupClass::AromaticLike;
+            }
+            FunctionalGroupClass::Other
+        })
+        .collect()
 }
 
 fn next_mode(modes: &[AtomColorMode], current: AtomColorMode) -> AtomColorMode {
@@ -308,6 +437,13 @@ fn compute_available_color_modes(
         let env_count = bond_env_atoms.iter().filter(|&&v| v).count();
         if env_count > 0 && env_count < crystal.atoms.len() {
             modes.push(AtomColorMode::BondEnv);
+        }
+
+        let functional_groups =
+            compute_functional_groups(crystal, &bonds, &ring_atoms, &bond_env_atoms);
+        let unique_groups = functional_groups.iter().copied().collect::<HashSet<_>>();
+        if unique_groups.len() > 1 {
+            modes.push(AtomColorMode::Functional);
         }
     }
 
@@ -1238,6 +1374,8 @@ fn spawn_atoms(
     let (bonds, _source) = resolve_bonds(crystal, bond_settings);
     let ring_atoms = compute_ring_atoms(crystal.atoms.len(), &bonds);
     let bond_env_atoms = compute_bond_env_atoms(crystal.atoms.len(), &bonds);
+    let functional_groups =
+        compute_functional_groups(crystal, &bonds, &ring_atoms, &bond_env_atoms);
     let mut bond_materials: HashMap<u8, Handle<StandardMaterial>> = HashMap::new();
 
     commands.entity(root_entity).with_children(|parent| {
@@ -1335,6 +1473,12 @@ fn spawn_atoms(
                         Color::srgb(0.62, 0.64, 0.68)
                     }
                 }
+                AtomColorMode::Functional => functional_group_color(
+                    functional_groups
+                        .get(idx)
+                        .copied()
+                        .unwrap_or(FunctionalGroupClass::Other),
+                ),
             };
             let material_key = match color_mode {
                 AtomColorMode::Element => format!("E:{}", atom.element),
@@ -1356,6 +1500,15 @@ fn spawn_atoms(
                     };
                     format!("B:{bucket}")
                 }
+                AtomColorMode::Functional => format!(
+                    "F:{}",
+                    functional_group_key(
+                        functional_groups
+                            .get(idx)
+                            .copied()
+                            .unwrap_or(FunctionalGroupClass::Other)
+                    )
+                ),
             };
             // Get or create material for this element
             let material = element_materials
