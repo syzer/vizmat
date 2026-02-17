@@ -10,10 +10,12 @@ use bevy::render::view::RenderLayers;
 use bevy::ui::RelativeCursorPosition;
 
 use crate::constants::{get_element_color, get_element_size, get_residue_class_color};
+use crate::formats::{
+    parse_structure_by_extension, SUPPORTED_EXTENSIONS, SUPPORTED_EXTENSIONS_HELP,
+};
 use crate::io::FileStatusKind;
-use crate::parse::{parse_pdb_content, parse_xyz_content};
 use crate::structure::{
-    infer_bonds_grid, AtomColorMode, AtomEntity, BondEntity, BondInferenceSettings, Crystal,
+    resolve_bonds, AtomColorMode, AtomEntity, BondEntity, BondInferenceSettings, Crystal,
 };
 
 const LAYER_GIZMO: RenderLayers = RenderLayers::layer(1);
@@ -463,7 +465,7 @@ pub(crate) fn setup_file_ui(mut commands: Commands, asset_server: Res<AssetServe
             ))
             .with_children(|right| {
                 right.spawn((
-                    Text::new("Drop XYZ/PDB file"),
+                    Text::new(format!("Drop {} file", SUPPORTED_EXTENSIONS_HELP)),
                     TextFont {
                         font_size: 12.0,
                         ..default()
@@ -553,8 +555,10 @@ pub(crate) fn update_file_ui(
 }
 
 #[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn bond_tolerance_controls(
     mut settings: ResMut<BondInferenceSettings>,
+    crystal: Option<Res<Crystal>>,
     mut interaction_queries: ParamSet<(
         Query<(&Interaction, &mut BackgroundColor), (Changed<Interaction>, With<BondToggleButton>)>,
         Query<(&Interaction, &RelativeCursorPosition), With<BondToleranceSliderTrack>>,
@@ -563,7 +567,10 @@ pub(crate) fn bond_tolerance_controls(
         Query<&mut Text, With<BondToleranceText>>,
         Query<&mut Text, With<BondToggleLabel>>,
     )>,
-    mut fill_query: Query<&mut Node, With<BondToleranceFill>>,
+    mut node_queries: ParamSet<(
+        Query<&mut Node, With<BondToleranceSliderTrack>>,
+        Query<&mut Node, With<BondToleranceFill>>,
+    )>,
     theme: Res<UiTheme>,
     time: Res<Time>,
 ) {
@@ -574,8 +581,10 @@ pub(crate) fn bond_tolerance_controls(
     let slider_percent = |v: f32| ((v - MIN_TOLERANCE) / (MAX_TOLERANCE - MIN_TOLERANCE)) * 100.0;
     let value_from_slider =
         |x_norm: f32| MIN_TOLERANCE + x_norm.clamp(0.0, 1.0) * (MAX_TOLERANCE - MIN_TOLERANCE);
+    let using_file_bonds =
+        settings.enabled && crystal.as_deref().is_some_and(|c| c.has_explicit_bonds());
 
-    let mut changed = false;
+    let mut changed = crystal.as_ref().is_some_and(|c| c.is_changed());
     for (interaction, mut color) in &mut interaction_queries.p0() {
         match *interaction {
             Interaction::Pressed => {
@@ -593,7 +602,7 @@ pub(crate) fn bond_tolerance_controls(
     }
 
     for (interaction, cursor) in &interaction_queries.p1() {
-        if *interaction == Interaction::Pressed {
+        if *interaction == Interaction::Pressed && !using_file_bonds {
             if let Some(pos) = cursor.normalized {
                 let raw = value_from_slider(pos.x);
                 let snapped = (raw / STEP).round() * STEP;
@@ -608,18 +617,35 @@ pub(crate) fn bond_tolerance_controls(
     }
 
     if changed {
-        if let Ok(mut text) = text_queries.p0().single_mut() {
-            text.0 = format!("{:.2}", settings.ui_tolerance_scale);
-        }
-        if let Ok(mut text) = text_queries.p1().single_mut() {
-            text.0 = if settings.enabled {
-                "Bonds: On".into()
+        if let Ok(mut slider_track) = node_queries.p0().single_mut() {
+            slider_track.display = if using_file_bonds {
+                Display::None
             } else {
-                "Bonds: Off".into()
+                Display::Flex
             };
         }
-        if let Ok(mut fill) = fill_query.single_mut() {
-            fill.width = Val::Percent(slider_percent(settings.ui_tolerance_scale));
+        if let Ok(mut text) = text_queries.p0().single_mut() {
+            text.0 = if using_file_bonds {
+                "File".into()
+            } else {
+                format!("{:.2}", settings.ui_tolerance_scale)
+            };
+        }
+        if let Ok(mut text) = text_queries.p1().single_mut() {
+            text.0 = if !settings.enabled {
+                "Bonds: Off".into()
+            } else if using_file_bonds {
+                "Bonds: On (File)".into()
+            } else {
+                "Bonds: On (Infer)".into()
+            };
+        }
+        if let Ok(mut fill) = node_queries.p1().single_mut() {
+            fill.width = if using_file_bonds {
+                Val::Percent(100.0)
+            } else {
+                Val::Percent(slider_percent(settings.ui_tolerance_scale))
+            };
         }
     }
 }
@@ -888,7 +914,7 @@ pub(crate) fn handle_open_file_button(
                 #[cfg(not(target_arch = "wasm32"))]
                 {
                     let picked = rfd::FileDialog::new()
-                        .add_filter("Structure", &["xyz", "pdb"])
+                        .add_filter("Structure", SUPPORTED_EXTENSIONS)
                         .pick_file();
                     if let Some(path) = picked {
                         let ext = path
@@ -897,8 +923,7 @@ pub(crate) fn handle_open_file_button(
                         match std::fs::read_to_string(&path) {
                             Ok(contents) => {
                                 let parsed = match ext.as_deref() {
-                                    Some("xyz") => parse_xyz_content(&contents),
-                                    Some("pdb") => parse_pdb_content(&contents),
+                                    Some(ext) => parse_structure_by_extension(ext, &contents),
                                     _ => Err(anyhow::anyhow!("Unsupported file extension")),
                                 };
                                 match parsed {
@@ -951,12 +976,19 @@ pub(crate) fn update_scene(
     atom_query: Query<Entity, With<AtomEntity>>,
     bond_query: Query<Entity, With<BondEntity>>,
     molecule_root: Query<Entity, With<MoleculeRoot>>,
-    mut last_bond_cfg: Local<Option<(bool, f32, AtomColorMode)>>,
+    mut last_bond_cfg: Local<Option<(bool, bool, f32, AtomColorMode)>>,
 ) {
     if let Some(crystal) = crystal {
+        let has_file_bonds = crystal.has_explicit_bonds();
+        let effective_tolerance = if has_file_bonds {
+            0.0
+        } else {
+            bond_settings.tolerance_scale
+        };
         let current_bond_cfg = (
             bond_settings.enabled,
-            bond_settings.tolerance_scale,
+            has_file_bonds,
+            effective_tolerance,
             *color_mode,
         );
         let bond_cfg_changed = match *last_bond_cfg {
@@ -1015,11 +1047,7 @@ fn spawn_atoms(
         perceptual_roughness: 0.8,
         ..default()
     });
-    let bonds = if bond_settings.enabled {
-        infer_bonds_grid(crystal, bond_settings.tolerance_scale)
-    } else {
-        Vec::new()
-    };
+    let (bonds, _source) = resolve_bonds(crystal, bond_settings);
 
     commands.entity(root_entity).with_children(|parent| {
         for bond in &bonds {
@@ -1303,13 +1331,20 @@ pub fn refresh_atoms_system(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     molecule_root: Query<Entity, With<MoleculeRoot>>,
-    mut last_bond_cfg: Local<Option<(bool, f32, AtomColorMode)>>,
+    mut last_bond_cfg: Local<Option<(bool, bool, f32, AtomColorMode)>>,
 ) {
     // Only run when Crystal resource changes
     if let Some(ref crystal) = crystal {
+        let has_file_bonds = crystal.has_explicit_bonds();
+        let effective_tolerance = if has_file_bonds {
+            0.0
+        } else {
+            bond_settings.tolerance_scale
+        };
         let current_bond_cfg = (
             bond_settings.enabled,
-            bond_settings.tolerance_scale,
+            has_file_bonds,
+            effective_tolerance,
             *color_mode,
         );
         let bond_cfg_changed = match *last_bond_cfg {
@@ -1627,5 +1662,42 @@ pub fn reset_camera_button_interaction(
                 *background = BackgroundColor(themed_button_bg(theme.mode, Interaction::None));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bond_tolerance_controls_system_runs_without_query_conflicts() {
+        let mut app = App::new();
+        app.init_resource::<Time>();
+        app.init_resource::<BondInferenceSettings>();
+        app.init_resource::<UiTheme>();
+
+        app.world_mut().spawn((
+            BondToleranceSliderTrack,
+            Interaction::None,
+            RelativeCursorPosition::default(),
+            Node::default(),
+        ));
+        app.world_mut().spawn((
+            BondToleranceFill,
+            Node::default(),
+            BackgroundColor(Color::NONE),
+        ));
+        app.world_mut().spawn((
+            BondToggleButton,
+            Interaction::None,
+            BackgroundColor(Color::NONE),
+        ));
+        app.world_mut()
+            .spawn((BondToleranceText, Text::new(""), TextColor(Color::WHITE)));
+        app.world_mut()
+            .spawn((BondToggleLabel, Text::new(""), TextColor(Color::WHITE)));
+
+        app.add_systems(Update, bond_tolerance_controls);
+        app.update();
     }
 }

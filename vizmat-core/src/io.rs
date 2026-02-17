@@ -2,7 +2,9 @@
 use bevy::prelude::*;
 use std::path::PathBuf;
 
-use crate::parse::{parse_pdb_content, parse_xyz_content};
+use crate::formats::{
+    is_supported_extension, parse_structure_by_extension, SUPPORTED_EXTENSIONS_HELP,
+};
 use crate::structure::{Atom, Crystal};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -43,6 +45,7 @@ pub(crate) fn load_default_crystal(mut commands: Commands) {
                 res_name: None,
             },
         ],
+        bonds: None,
     };
 
     commands.insert_resource(crystal);
@@ -62,7 +65,7 @@ impl Default for FileDragDrop {
         Self {
             dragged_file: None,
             loaded_crystal: None,
-            status_message: "Drop XYZ/PDB file".to_string(),
+            status_message: format!("Drop {} file", SUPPORTED_EXTENSIONS_HELP),
             status_kind: FileStatusKind::Info,
         }
     }
@@ -80,16 +83,21 @@ pub(crate) fn handle_file_drag_drop(
 
                 if let Some(extension) = path_buf.extension() {
                     let ext = extension.to_string_lossy().to_ascii_lowercase();
-                    if ext == "xyz" || ext == "pdb" {
+                    if is_supported_extension(&ext) {
                         file_drag_drop.dragged_file = Some(path_buf.clone());
                         if let Some(name) = path_buf.file_name().and_then(|n| n.to_str()) {
                             file_drag_drop.status_message = format!("Loading: {name}");
                             file_drag_drop.status_kind = FileStatusKind::Info;
                         }
                     } else {
-                        println!("Unsupported file type. Please drop an XYZ or PDB file.");
-                        file_drag_drop.status_message =
-                            "Unsupported file. Please drop .xyz or .pdb".to_string();
+                        println!(
+                            "Unsupported file type. Please drop a {} file.",
+                            SUPPORTED_EXTENSIONS_HELP
+                        );
+                        file_drag_drop.status_message = format!(
+                            "Unsupported file. Please drop {}",
+                            SUPPORTED_EXTENSIONS_HELP
+                        );
                         file_drag_drop.status_kind = FileStatusKind::Error;
                     }
                 }
@@ -122,8 +130,7 @@ pub(crate) fn load_dropped_file(
                         .extension()
                         .map(|s| s.to_string_lossy().to_ascii_lowercase());
                     let parsed = match ext.as_deref() {
-                        Some("xyz") => parse_xyz_content(&contents),
-                        Some("pdb") => parse_pdb_content(&contents),
+                        Some(ext) => parse_structure_by_extension(ext, &contents),
                         _ => Err(anyhow::anyhow!("Unsupported file extension")),
                     };
                     match parsed {
@@ -166,7 +173,9 @@ pub(crate) fn update_crystal_from_file(
     if let Some(crystal) = &file_drag_drop.loaded_crystal {
         // Only update if this is a new crystal
         if let Some(current) = current_crystal {
-            if current.atoms.len() != crystal.atoms.len() {
+            let current_bond_count = current.bonds.as_ref().map_or(0, Vec::len);
+            let new_bond_count = crystal.bonds.as_ref().map_or(0, Vec::len);
+            if current.atoms.len() != crystal.atoms.len() || current_bond_count != new_bond_count {
                 commands.insert_resource(crystal.clone());
                 println!("Crystal updated with {} atoms", crystal.atoms.len());
             }
