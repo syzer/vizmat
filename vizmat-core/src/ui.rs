@@ -15,7 +15,8 @@ use crate::formats::{
 };
 use crate::io::FileStatusKind;
 use crate::structure::{
-    resolve_bonds, AtomColorMode, AtomEntity, BondEntity, BondInferenceSettings, BondOrder, Crystal,
+    resolve_bonds, AtomColorMode, AtomEntity, AtomIndex, BondEntity, BondInferenceSettings,
+    BondOrder, Crystal,
 };
 
 const LAYER_GIZMO: RenderLayers = RenderLayers::layer(1);
@@ -96,6 +97,26 @@ pub(crate) struct BondOrderLegendContainer;
 
 #[derive(Component)]
 pub(crate) struct BondOrderLegendText;
+
+#[derive(Component)]
+pub(crate) struct AtomHoverPanel;
+
+#[derive(Component)]
+pub(crate) struct AtomHoverText;
+
+#[derive(Resource, Default, Clone)]
+pub(crate) struct AtomHoverCache {
+    degree: Vec<usize>,
+    ring_atoms: Vec<bool>,
+}
+
+#[derive(Resource, Default, Clone, Copy)]
+pub(crate) struct SelectedAtom {
+    pub(crate) index: Option<usize>,
+}
+
+#[derive(Component)]
+pub(crate) struct AtomSelectionHighlight;
 
 #[derive(Resource, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ThemeMode {
@@ -396,6 +417,19 @@ fn compute_bond_env_atoms(atom_count: usize, bonds: &[crate::structure::Bond]) -
     marks
 }
 
+fn compute_atom_degree(atom_count: usize, bonds: &[crate::structure::Bond]) -> Vec<usize> {
+    let mut degree = vec![0_usize; atom_count];
+    for bond in bonds {
+        if bond.a < atom_count {
+            degree[bond.a] = degree[bond.a].saturating_add(1);
+        }
+        if bond.b < atom_count {
+            degree[bond.b] = degree[bond.b].saturating_add(1);
+        }
+    }
+    degree
+}
+
 fn count_unique_non_empty(values: impl Iterator<Item = Option<String>>) -> usize {
     let mut set = HashSet::new();
     for value in values.flatten() {
@@ -450,6 +484,105 @@ fn compute_available_color_modes(
     modes
 }
 
+pub(crate) fn update_atom_hover_cache(
+    crystal: Option<Res<Crystal>>,
+    bond_settings: Res<BondInferenceSettings>,
+    mut cache: ResMut<AtomHoverCache>,
+) {
+    let Some(crystal) = crystal else {
+        cache.degree.clear();
+        cache.ring_atoms.clear();
+        return;
+    };
+
+    if !crystal.is_changed() && !bond_settings.is_changed() {
+        return;
+    }
+
+    let (bonds, _) = resolve_bonds(&crystal, &bond_settings);
+    cache.degree = compute_atom_degree(crystal.atoms.len(), &bonds);
+    cache.ring_atoms = compute_ring_atoms(crystal.atoms.len(), &bonds);
+}
+
+fn pick_atom_under_cursor(
+    window: &Window,
+    camera: &Camera,
+    camera_transform: &GlobalTransform,
+    atom_query: &Query<(&GlobalTransform, &AtomIndex), With<AtomEntity>>,
+) -> Option<(usize, f32)> {
+    let cursor = window.cursor_position()?;
+    let mut best: Option<(usize, f32)> = None;
+    for (atom_transform, atom_index) in atom_query {
+        let Ok(screen) = camera.world_to_viewport(camera_transform, atom_transform.translation())
+        else {
+            continue;
+        };
+        let d2 = screen.distance_squared(cursor);
+        if best.is_none_or(|(_, prev)| d2 < prev) {
+            best = Some((atom_index.0, d2));
+        }
+    }
+    best
+}
+
+fn format_atom_info(
+    atom_idx: usize,
+    crystal: &Crystal,
+    cache: &AtomHoverCache,
+    selected: bool,
+) -> String {
+    let Some(atom) = crystal.atoms.get(atom_idx) else {
+        return String::new();
+    };
+    let degree = cache.degree.get(atom_idx).copied().unwrap_or(0);
+    let ring = if cache.ring_atoms.get(atom_idx).copied().unwrap_or(false) {
+        "yes"
+    } else {
+        "no"
+    };
+    let mut lines = Vec::new();
+    if selected {
+        lines.push("Selected atom".to_string());
+    }
+    lines.push(format!("Element: {}", atom.element));
+    lines.push(format!("Index: {}", atom_idx + 1));
+    lines.push(format!("Degree: {}", degree));
+    lines.push(format!("Ring: {}", ring));
+    if let Some(chain_id) = atom.chain_id.as_deref().filter(|v| !v.is_empty()) {
+        lines.push(format!("Chain: {}", chain_id));
+    }
+    if let Some(res_name) = atom.res_name.as_deref().filter(|v| !v.is_empty()) {
+        lines.push(format!("Residue: {}", res_name));
+    }
+    lines.join("\n")
+}
+
+pub(crate) fn update_selected_atom_from_click(
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window>,
+    camera_query: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
+    atom_query: Query<(&GlobalTransform, &AtomIndex), With<AtomEntity>>,
+    ui_interactions: Query<&Interaction, With<Button>>,
+    mut selected: ResMut<SelectedAtom>,
+) {
+    if !mouse_buttons.just_pressed(MouseButton::Left) {
+        return;
+    }
+    let ui_active = ui_interactions.iter().any(|i| *i != Interaction::None);
+    if ui_active {
+        return;
+    }
+    let (Ok(window), Ok((camera, camera_transform))) = (windows.single(), camera_query.single())
+    else {
+        return;
+    };
+    const CLICK_RADIUS_PX: f32 = 16.0;
+    let picked = pick_atom_under_cursor(window, camera, camera_transform, &atom_query)
+        .filter(|(_, d2)| *d2 <= CLICK_RADIUS_PX * CLICK_RADIUS_PX)
+        .map(|(idx, _)| idx);
+    selected.index = picked;
+}
+
 #[derive(SystemParam)]
 pub(crate) struct HudThemeParams<'w, 's> {
     bg: ParamSet<'w, 's, HudBgQueries<'w, 's>>,
@@ -477,6 +610,7 @@ type HudTextQueries<'w, 's> = (
     Query<'w, 's, &'static mut TextColor, (With<FileUploadText>, Without<HudButtonLabel>)>,
     Query<'w, 's, &'static mut TextColor, With<HudHelpText>>,
     Query<'w, 's, &'static mut TextColor, With<HudLegendText>>,
+    Query<'w, 's, &'static mut TextColor, With<AtomHoverText>>,
 );
 
 type ThemeToggleInteractionQuery<'w, 's> = Query<
@@ -519,6 +653,8 @@ type MainCameraChangedTransformQuery<'w, 's> = Query<
 pub(crate) fn setup_file_ui(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.insert_resource(UiTheme::default());
     commands.insert_resource(ColorModeAvailability::default());
+    commands.insert_resource(AtomHoverCache::default());
+    commands.insert_resource(SelectedAtom::default());
     let p = theme_palette(ThemeMode::Dark);
     let icon_font: Handle<Font> = asset_server.load("fonts/fa-solid-900.ttf");
     commands.insert_resource(ClearColor(p.scene_bg));
@@ -847,6 +983,34 @@ pub(crate) fn setup_file_ui(mut commands: Commands, asset_server: Res<AssetServe
                 BondOrderLegendText,
             ));
         });
+
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(10.0),
+                top: Val::Px(60.0),
+                display: Display::None,
+                max_width: Val::Px(320.0),
+                padding: UiRect::axes(Val::Px(8.0), Val::Px(6.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                ..default()
+            },
+            BorderColor(p.border),
+            BackgroundColor(Color::srgba(0.06, 0.08, 0.12, 0.88)),
+            AtomHoverPanel,
+        ))
+        .with_children(|panel| {
+            panel.spawn((
+                Text::new(""),
+                TextFont {
+                    font_size: 11.0,
+                    ..default()
+                },
+                TextColor(p.text_muted),
+                AtomHoverText,
+            ));
+        });
 }
 
 // System to update file upload UI
@@ -1083,6 +1247,9 @@ pub(crate) fn apply_theme_to_hud(
         *color = TextColor(p.text_muted);
     }
     for mut color in &mut themed.text.p3() {
+        *color = TextColor(p.text_muted);
+    }
+    for mut color in &mut themed.text.p4() {
         *color = TextColor(p.text_muted);
     }
 }
@@ -1529,6 +1696,7 @@ fn spawn_atoms(
                 Transform::from_xyz(atom.x, atom.y, atom.z)
                     .with_scale(Vec3::splat(get_element_size(&atom.element))),
                 AtomEntity,
+                AtomIndex(idx),
             ));
         }
     });
@@ -1835,6 +2003,109 @@ pub(crate) fn update_bond_order_legend(
         .collect::<Vec<_>>()
         .join(", ");
     legend_text.0 = format!("Bond orders: {labels}");
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn update_atom_hover_label(
+    windows: Query<&Window>,
+    camera_query: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
+    atom_query: Query<(&GlobalTransform, &AtomIndex), With<AtomEntity>>,
+    crystal: Option<Res<Crystal>>,
+    cache: Res<AtomHoverCache>,
+    selected: Res<SelectedAtom>,
+    mut panel_query: Query<&mut Node, With<AtomHoverPanel>>,
+    mut text_query: Query<&mut Text, With<AtomHoverText>>,
+) {
+    let Ok(mut panel_node) = panel_query.single_mut() else {
+        return;
+    };
+    let Ok(mut panel_text) = text_query.single_mut() else {
+        return;
+    };
+    let Some(crystal) = crystal else {
+        panel_node.display = Display::None;
+        return;
+    };
+
+    if let Some(selected_idx) = selected.index {
+        if selected_idx < crystal.atoms.len() {
+            panel_node.display = Display::Flex;
+            panel_text.0 = format_atom_info(selected_idx, &crystal, &cache, true);
+            return;
+        }
+    }
+
+    let Ok(window) = windows.single() else {
+        panel_node.display = Display::None;
+        return;
+    };
+    if window.cursor_position().is_none() {
+        panel_node.display = Display::None;
+        return;
+    }
+    let Ok((camera, camera_transform)) = camera_query.single() else {
+        panel_node.display = Display::None;
+        return;
+    };
+
+    const HOVER_RADIUS_PX: f32 = 16.0;
+    let Some((atom_idx, d2)) =
+        pick_atom_under_cursor(window, camera, camera_transform, &atom_query)
+    else {
+        panel_node.display = Display::None;
+        return;
+    };
+    if d2 > HOVER_RADIUS_PX * HOVER_RADIUS_PX {
+        panel_node.display = Display::None;
+        return;
+    }
+
+    panel_node.display = Display::Flex;
+    panel_text.0 = format_atom_info(atom_idx, &crystal, &cache, false);
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn sync_atom_selection_highlight(
+    mut commands: Commands,
+    selected: Res<SelectedAtom>,
+    crystal: Option<Res<Crystal>>,
+    highlight_entities: Query<Entity, With<AtomSelectionHighlight>>,
+    molecule_root: Query<Entity, With<MoleculeRoot>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    for entity in &highlight_entities {
+        commands.entity(entity).despawn();
+    }
+    let Some(crystal) = crystal else {
+        return;
+    };
+    let Some(selected_idx) = selected.index else {
+        return;
+    };
+    let Some(atom) = crystal.atoms.get(selected_idx) else {
+        return;
+    };
+    let Ok(root) = molecule_root.single() else {
+        return;
+    };
+    let mesh = meshes.add(Sphere::new(1.0));
+    let mat = materials.add(StandardMaterial {
+        base_color: Color::srgba(0.34, 0.66, 0.98, 0.22),
+        emissive: Color::srgb(0.26, 0.58, 0.95).into(),
+        alpha_mode: AlphaMode::Blend,
+        unlit: true,
+        ..default()
+    });
+    commands.entity(root).with_children(|parent| {
+        parent.spawn((
+            Mesh3d(mesh),
+            MeshMaterial3d(mat),
+            Transform::from_xyz(atom.x, atom.y, atom.z)
+                .with_scale(Vec3::splat(get_element_size(&atom.element) * 1.45)),
+            AtomSelectionHighlight,
+        ));
+    });
 }
 
 // Simple camera controls

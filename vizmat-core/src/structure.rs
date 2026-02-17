@@ -61,6 +61,9 @@ pub enum AtomColorMode {
 #[derive(Component)]
 pub struct AtomEntity;
 
+#[derive(Component, Debug, Clone, Copy)]
+pub struct AtomIndex(pub usize);
+
 // Component to mark bond entities.
 #[derive(Component)]
 pub struct BondEntity;

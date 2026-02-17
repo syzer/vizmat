@@ -29,9 +29,11 @@ use crate::ui::{
     apply_bond_tolerance_debounce, apply_theme_to_hud, auto_reset_view_on_crystal_change,
     bond_tolerance_controls, camera_controls, color_mode_button, handle_load_default_button,
     handle_open_file_button, refresh_atoms_system, reset_camera_button_interaction, setup_cameras,
-    setup_file_ui, setup_light, sync_color_mode_label, sync_gizmo_axis_rotation,
-    toggle_light_attachment, toggle_theme_button, update_bond_order_legend,
+    setup_file_ui, setup_light, sync_atom_selection_highlight, sync_color_mode_label,
+    sync_gizmo_axis_rotation, toggle_light_attachment, toggle_theme_button,
+    update_atom_hover_cache, update_atom_hover_label, update_bond_order_legend,
     update_color_mode_availability, update_file_ui, update_gizmo_viewport, update_scene,
+    update_selected_atom_from_click,
 };
 use crate::ui::{setup_buttons, spawn_axis};
 
@@ -289,7 +291,12 @@ pub fn run_app() {
         .add_systems(Update, reset_camera_button_interaction)
         .add_systems(Update, handle_load_default_button)
         .add_systems(Update, handle_open_file_button)
+        .add_systems(Update, update_selected_atom_from_click)
         .add_systems(Update, update_color_mode_availability)
+        .add_systems(
+            Update,
+            update_atom_hover_cache.after(update_color_mode_availability),
+        )
         .add_systems(Update, color_mode_button)
         .add_systems(Update, sync_color_mode_label.after(color_mode_button))
         .add_systems(Update, bond_tolerance_controls)
@@ -310,7 +317,9 @@ pub fn run_app() {
                 sync_gizmo_axis_rotation,
                 update_gizmo_viewport,
                 update_scene,
+                sync_atom_selection_highlight.after(update_scene),
                 update_bond_order_legend.after(update_scene),
+                update_atom_hover_label.after(update_scene),
             ),
         )
         .add_observer(web_event_observer)
