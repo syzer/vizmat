@@ -3,16 +3,18 @@
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 use bevy::ecs::system::SystemParam;
+use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input::mouse::{MouseMotion, MouseWheel};
+use bevy::input::ButtonState;
 use bevy::prelude::*;
 use bevy::render::camera::Viewport;
 use bevy::render::view::RenderLayers;
 use bevy::ui::RelativeCursorPosition;
 
 use crate::constants::{get_element_color, get_element_size, get_residue_class_color};
-use crate::formats::SUPPORTED_EXTENSIONS_HELP;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::formats::{parse_structure_by_extension, SUPPORTED_EXTENSIONS};
+use crate::formats::SUPPORTED_EXTENSIONS;
+use crate::formats::{parse_structure_by_extension, SUPPORTED_EXTENSIONS_HELP};
 use crate::io::FileStatusKind;
 use crate::structure::{
     resolve_bonds, AtomColorMode, AtomEntity, AtomIndex, BondEntity, BondInferenceSettings,
@@ -23,6 +25,10 @@ const LAYER_GIZMO: RenderLayers = RenderLayers::layer(1);
 const LAYER_CANVAS: RenderLayers = RenderLayers::layer(0);
 const GIZMO_VIEWPORT_SIZE_PX: u32 = 200;
 const GIZMO_VIEWPORT_MARGIN_PX: u32 = 10;
+const EMBEDDED_PARTICLE_LIST: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../vizmat-app/assets/particles/list.txt"
+));
 
 #[derive(Component)]
 pub(crate) struct MainCamera;
@@ -52,6 +58,30 @@ pub(crate) struct ThemeToggleButton;
 
 #[derive(Component)]
 pub(crate) struct ThemeToggleIcon;
+
+#[derive(Component)]
+pub(crate) struct ParticlePickerToggleButton;
+
+#[derive(Component)]
+pub(crate) struct ParticlePickerPanel;
+
+#[derive(Component)]
+pub(crate) struct ParticlePickerQueryText;
+
+#[derive(Component)]
+pub(crate) struct ParticlePickerResultsRoot;
+
+#[derive(Component, Clone)]
+pub(crate) struct ParticlePickerResultButton {
+    pub(crate) path: String,
+}
+
+#[derive(Resource, Default)]
+pub(crate) struct ParticlePickerState {
+    pub(crate) entries: Vec<String>,
+    pub(crate) query: String,
+    pub(crate) visible: bool,
+}
 
 #[derive(Component)]
 pub(crate) struct HudTopBar;
@@ -649,12 +679,114 @@ type MainCameraChangedTransformQuery<'w, 's> = Query<
     (With<MainCamera>, Without<GizmoAxisRoot>, Changed<Transform>),
 >;
 
+fn parse_embedded_particle_entries() -> Vec<String> {
+    EMBEDDED_PARTICLE_LIST
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn particle_matches_query(path: &str, query: &str) -> bool {
+    if query.trim().is_empty() {
+        return true;
+    }
+    path.to_ascii_lowercase()
+        .contains(&query.trim().to_ascii_lowercase())
+}
+
+fn filtered_particle_entries(state: &ParticlePickerState) -> Vec<String> {
+    state
+        .entries
+        .iter()
+        .filter(|entry| particle_matches_query(entry, &state.query))
+        .take(12)
+        .cloned()
+        .collect()
+}
+
+fn embedded_particle_contents(path: &str) -> Option<&'static str> {
+    match path {
+        "compounds/ESM.sdf" => Some(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../vizmat-app/assets/particles/compounds/ESM.sdf"
+        ))),
+        "compounds/NAX.sdf" => Some(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../vizmat-app/assets/particles/compounds/NAX.sdf"
+        ))),
+        "compounds/cyclosporin_a.sdf" => Some(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../vizmat-app/assets/particles/compounds/cyclosporin_a.sdf"
+        ))),
+        "compounds/esomeprazole.xyz" => Some(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../vizmat-app/assets/particles/compounds/esomeprazole.xyz"
+        ))),
+        "compounds/naproxen.xyz" => Some(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../vizmat-app/assets/particles/compounds/naproxen.xyz"
+        ))),
+        "compounds/vancomycin.sdf" => Some(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../vizmat-app/assets/particles/compounds/vancomycin.sdf"
+        ))),
+        "proteins/3J3A.pdb" => Some(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../vizmat-app/assets/particles/proteins/3J3A.pdb"
+        ))),
+        "proteins/3J3A.xyz" => Some(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../vizmat-app/assets/particles/proteins/3J3A.xyz"
+        ))),
+        "proteins/4HHB.pdb" => Some(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../vizmat-app/assets/particles/proteins/4HHB.pdb"
+        ))),
+        "proteins/4HHB.xyz" => Some(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../vizmat-app/assets/particles/proteins/4HHB.xyz"
+        ))),
+        "proteins/4V6F.pdb" => Some(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../vizmat-app/assets/particles/proteins/4V6F.pdb"
+        ))),
+        "proteins/4V6F.xyz" => Some(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../vizmat-app/assets/particles/proteins/4V6F.xyz"
+        ))),
+        "proteins/6VXX.pdb" => Some(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../vizmat-app/assets/particles/proteins/6VXX.pdb"
+        ))),
+        "proteins/6VXX.xyz" => Some(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../vizmat-app/assets/particles/proteins/6VXX.xyz"
+        ))),
+        "proteins/7K00.pdb" => Some(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../vizmat-app/assets/particles/proteins/7K00.pdb"
+        ))),
+        "proteins/7K00.xyz" => Some(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../vizmat-app/assets/particles/proteins/7K00.xyz"
+        ))),
+        _ => None,
+    }
+}
+
 // System to set up file upload UI
 pub(crate) fn setup_file_ui(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.insert_resource(UiTheme::default());
     commands.insert_resource(ColorModeAvailability::default());
     commands.insert_resource(AtomHoverCache::default());
     commands.insert_resource(SelectedAtom::default());
+    commands.insert_resource(ParticlePickerState {
+        entries: parse_embedded_particle_entries(),
+        query: String::new(),
+        visible: false,
+    });
     let p = theme_palette(ThemeMode::Dark);
     let icon_font: Handle<Font> = asset_server.load("fonts/fa-solid-900.ttf");
     commands.insert_resource(ClearColor(p.scene_bg));
@@ -694,37 +826,12 @@ pub(crate) fn setup_file_ui(mut commands: Commands, asset_server: Res<AssetServe
                     },
                     BorderColor(p.border),
                     BackgroundColor(p.button_bg),
-                    OpenFileButton,
+                    ParticlePickerToggleButton,
                     HudButton,
                 ))
                 .with_children(|button| {
                     button.spawn((
-                        Text::new("Open File"),
-                        TextFont {
-                            font: default(),
-                            font_size: 12.0,
-                            ..default()
-                        },
-                        TextColor(p.text),
-                        HudButtonLabel,
-                    ));
-                });
-
-                row.spawn((
-                    Button,
-                    Node {
-                        padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)),
-                        border: UiRect::all(Val::Px(1.0)),
-                        ..default()
-                    },
-                    BorderColor(p.border),
-                    BackgroundColor(p.button_bg),
-                    LoadDefaultButton,
-                    HudButton,
-                ))
-                .with_children(|button| {
-                    button.spawn((
-                        Text::new("Load Default"),
+                        Text::new("Load Particle"),
                         TextFont {
                             font: default(),
                             font_size: 12.0,
@@ -924,6 +1031,56 @@ pub(crate) fn setup_file_ui(mut commands: Commands, asset_server: Res<AssetServe
                         ));
                     });
             });
+        });
+
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(54.0),
+                left: Val::Px(10.0),
+                width: Val::Px(360.0),
+                max_height: Val::Px(320.0),
+                display: Display::None,
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(6.0),
+                padding: UiRect::all(Val::Px(8.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                ..default()
+            },
+            BorderColor(p.border),
+            BackgroundColor(p.bar_bg_alt),
+            ParticlePickerPanel,
+        ))
+        .with_children(|panel| {
+            panel.spawn((
+                Text::new("Search particles:"),
+                TextFont {
+                    font_size: 11.0,
+                    ..default()
+                },
+                TextColor(p.text_muted),
+                HudHelpText,
+            ));
+            panel.spawn((
+                Text::new(""),
+                TextFont {
+                    font_size: 12.0,
+                    ..default()
+                },
+                TextColor(p.text),
+                ParticlePickerQueryText,
+            ));
+            panel.spawn((
+                Node {
+                    flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(4.0),
+                    overflow: Overflow::clip_y(),
+                    ..default()
+                },
+                BackgroundColor(Color::NONE),
+                ParticlePickerResultsRoot,
+            ));
         });
 
     commands
@@ -1376,6 +1533,211 @@ pub fn clear_old_atoms(mut commands: Commands, atom_query: Query<Entity, With<At
     }
 }
 
+fn load_particle_from_catalog_path(path: &str, file_drag_drop: &mut crate::io::FileDragDrop) {
+    let Some(contents) = embedded_particle_contents(path) else {
+        file_drag_drop.status_message = format!("Missing embedded file: {path}");
+        file_drag_drop.status_kind = FileStatusKind::Error;
+        return;
+    };
+    let ext = path
+        .rsplit('.')
+        .next()
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    match parse_structure_by_extension(&ext, contents) {
+        Ok(crystal) => {
+            let atom_count = crystal.atoms.len();
+            let file_bond_count = crystal.bonds.as_ref().map_or(0, Vec::len);
+            let name = path.rsplit('/').next().unwrap_or(path);
+            file_drag_drop.loaded_crystal = Some(crystal);
+            file_drag_drop.dragged_file = None;
+            file_drag_drop.status_message = if file_bond_count > 0 {
+                format!("Loaded: {name} ({atom_count} atoms, {file_bond_count} file bonds)")
+            } else {
+                format!("Loaded: {name} ({atom_count} atoms)")
+            };
+            file_drag_drop.status_kind = FileStatusKind::Success;
+        }
+        Err(err) => {
+            file_drag_drop.status_message = format!("Parse error: {err}");
+            file_drag_drop.status_kind = FileStatusKind::Error;
+        }
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub(crate) fn particle_picker_toggle_button(
+    mut interaction_query: Query<
+        (&Interaction, &mut BackgroundColor),
+        (Changed<Interaction>, With<ParticlePickerToggleButton>),
+    >,
+    mut picker: ResMut<ParticlePickerState>,
+    theme: Res<UiTheme>,
+) {
+    for (interaction, mut color) in &mut interaction_query {
+        match *interaction {
+            Interaction::Pressed => {
+                picker.visible = !picker.visible;
+                if picker.visible {
+                    picker.query.clear();
+                }
+                *color = BackgroundColor(themed_button_bg(theme.mode, Interaction::Pressed));
+            }
+            Interaction::Hovered => {
+                *color = BackgroundColor(themed_button_bg(theme.mode, Interaction::Hovered));
+            }
+            Interaction::None => {
+                *color = BackgroundColor(themed_button_bg(theme.mode, Interaction::None));
+            }
+        }
+    }
+}
+
+pub(crate) fn particle_picker_keyboard_search(
+    mut keyboard_events: EventReader<KeyboardInput>,
+    mut picker: ResMut<ParticlePickerState>,
+    mut file_drag_drop: ResMut<crate::io::FileDragDrop>,
+) {
+    if !picker.visible {
+        return;
+    }
+
+    for event in keyboard_events.read() {
+        if event.state != ButtonState::Pressed {
+            continue;
+        }
+
+        match &event.logical_key {
+            Key::Escape => {
+                picker.visible = false;
+            }
+            Key::Backspace => {
+                picker.query.pop();
+            }
+            Key::Enter => {
+                if let Some(first) = filtered_particle_entries(&picker).first().cloned() {
+                    load_particle_from_catalog_path(&first, &mut file_drag_drop);
+                    picker.visible = false;
+                }
+            }
+            Key::Character(_) => {
+                if let Some(text) = &event.text {
+                    // Keep search input simple and predictable for all layouts.
+                    if text.chars().all(|ch| !ch.is_control()) {
+                        picker.query.push_str(text);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+pub(crate) fn refresh_particle_picker_panel(
+    mut commands: Commands,
+    picker: Res<ParticlePickerState>,
+    mut panel_query: Query<&mut Node, With<ParticlePickerPanel>>,
+    mut query_text: Query<&mut Text, With<ParticlePickerQueryText>>,
+    mut results_root_query: Query<(Entity, Option<&Children>), With<ParticlePickerResultsRoot>>,
+    theme: Res<UiTheme>,
+) {
+    let Ok(mut panel_node) = panel_query.single_mut() else {
+        return;
+    };
+    panel_node.display = if picker.visible {
+        Display::Flex
+    } else {
+        Display::None
+    };
+
+    if !picker.visible {
+        return;
+    }
+
+    if let Ok(mut text) = query_text.single_mut() {
+        text.0 = if picker.query.is_empty() {
+            "Type to filter (Enter to load first match, Esc to close)".to_string()
+        } else {
+            format!("query: {}", picker.query)
+        };
+    }
+
+    if !picker.is_changed() && !theme.is_changed() {
+        return;
+    }
+
+    let Ok((results_root, maybe_children)) = results_root_query.single_mut() else {
+        return;
+    };
+    if let Some(children) = maybe_children {
+        for child in children.iter() {
+            commands.entity(child).despawn();
+        }
+    }
+
+    let palette = theme_palette(theme.mode);
+    for path in filtered_particle_entries(&picker) {
+        commands.entity(results_root).with_children(|parent| {
+            parent
+                .spawn((
+                    Button,
+                    Node {
+                        width: Val::Percent(100.0),
+                        padding: UiRect::axes(Val::Px(8.0), Val::Px(4.0)),
+                        border: UiRect::all(Val::Px(1.0)),
+                        ..default()
+                    },
+                    BorderColor(palette.border),
+                    BackgroundColor(palette.button_bg),
+                    ParticlePickerResultButton { path: path.clone() },
+                    HudButton,
+                ))
+                .with_children(|button| {
+                    button.spawn((
+                        Text::new(path),
+                        TextFont {
+                            font_size: 11.0,
+                            ..default()
+                        },
+                        TextColor(palette.text),
+                        HudButtonLabel,
+                    ));
+                });
+        });
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub(crate) fn particle_picker_result_buttons(
+    mut interaction_query: Query<
+        (
+            &Interaction,
+            &ParticlePickerResultButton,
+            &mut BackgroundColor,
+        ),
+        (Changed<Interaction>, With<ParticlePickerResultButton>),
+    >,
+    mut picker: ResMut<ParticlePickerState>,
+    mut file_drag_drop: ResMut<crate::io::FileDragDrop>,
+    theme: Res<UiTheme>,
+) {
+    for (interaction, selected, mut background) in &mut interaction_query {
+        match *interaction {
+            Interaction::Pressed => {
+                *background = BackgroundColor(themed_button_bg(theme.mode, Interaction::Pressed));
+                load_particle_from_catalog_path(&selected.path, &mut file_drag_drop);
+                picker.visible = false;
+            }
+            Interaction::Hovered => {
+                *background = BackgroundColor(themed_button_bg(theme.mode, Interaction::Hovered));
+            }
+            Interaction::None => {
+                *background = BackgroundColor(themed_button_bg(theme.mode, Interaction::None));
+            }
+        }
+    }
+}
+
 // System to handle button click to load default structure
 #[allow(clippy::type_complexity)]
 pub(crate) fn handle_load_default_button(
@@ -1436,7 +1798,8 @@ pub(crate) fn handle_open_file_button(
                             match parsed {
                                 Ok(crystal) => {
                                     let atom_count = crystal.atoms.len();
-                                    let file_bond_count = crystal.bonds.as_ref().map_or(0, Vec::len);
+                                    let file_bond_count =
+                                        crystal.bonds.as_ref().map_or(0, Vec::len);
                                     let name = path
                                         .file_name()
                                         .and_then(|n| n.to_str())
