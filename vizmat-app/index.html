@@ -4,25 +4,37 @@
     <meta charset="UTF-8">
     <title>vizmat: a cross platform crystal visualizer</title>
     <style>
+      html, body {
+        width: 100%;
+        height: 100%;
+      }
       body {
         margin: 0;
         font-family: sans-serif;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
+        overflow: hidden;
+        background: #020710;
+      }
+      h1 {
+        position: fixed;
+        top: 8px;
+        left: 12px;
+        margin: 0;
+        z-index: 10;
+        color: #ffffff;
+        font-size: 1rem;
+        text-shadow: 0 1px 8px rgba(0, 0, 0, 0.7);
       }
       header {
-        width: 80%; /* header less than full width if desired */
-        max-width: 1200px; /* optional max width */
-        color: white;
+        position: fixed;
+        top: 8px;
+        right: 12px;
+        z-index: 10;
         display: flex;
-        justify-content: flex-end; /* push content to the right */
         align-items: center;
-        padding: 0.5rem 1rem;
-        height: 50px;
-        margin-top: 0;
-        margin-bottom: 0.5rem;
-        box-sizing: border-box;
+        padding: 0.35rem 0.6rem;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.9);
+        box-shadow: 0 6px 24px rgba(0, 0, 0, 0.22);
       }
       header h1 {
         font-size: 0.5rem; /* smaller than before */
@@ -41,13 +53,11 @@
         height: 24px;
         margin-left: 0.5rem;
       }
-      #canvas-container {
-        width: 80%; /* same width as header */
-        max-width: 1200px;
-      }
       canvas {
-        width: 100%; /* fill the container */
-        height: 80vh; /* or any desired height */
+        position: fixed;
+        inset: 0;
+        width: 100vw;
+        height: 100vh;
         display: block;
       }
     </style>

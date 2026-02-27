@@ -130,11 +130,14 @@ pub fn set_sender(sender: ChannelSender<WebEvent>) {
 
 #[cfg(target_arch = "wasm32")]
 fn window() -> Window {
-    use bevy::window::WindowResolution;
-
     Window {
         canvas: Some("#bevy-canvas".into()),
-        resolution: WindowResolution::new(1280.0, 720.0).with_scale_factor_override(1.0),
+        fit_canvas_to_parent: true,
+        resize_constraints: WindowResizeConstraints {
+            min_width: 1.0,
+            min_height: 1.0,
+            ..default()
+        },
         prevent_default_event_handling: false,
         ..default()
     }
