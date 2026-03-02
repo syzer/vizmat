@@ -28,12 +28,13 @@ use crate::structure::{
 use crate::ui::{
     apply_bond_tolerance_debounce, apply_theme_to_atom_hover_panel, apply_theme_to_hud,
     auto_reset_view_on_crystal_change, bond_tolerance_controls, camera_controls, color_mode_button,
-    handle_load_default_button, handle_open_file_button, reset_camera_button_interaction,
-    setup_cameras, setup_file_ui, setup_light, sync_atom_selection_highlight,
-    sync_color_mode_label, sync_gizmo_axis_rotation, toggle_light_attachment, toggle_theme_button,
-    update_atom_hover_cache, update_atom_hover_label, update_bond_order_legend,
-    update_color_mode_availability, update_file_ui, update_gizmo_viewport, update_scene,
-    update_selected_atom_from_click,
+    handle_load_default_button, handle_open_file_button, particle_picker_keyboard_search,
+    particle_picker_result_buttons, particle_picker_toggle_button, refresh_particle_picker_panel,
+    reset_camera_button_interaction, setup_cameras, setup_file_ui, setup_light,
+    sync_atom_selection_highlight, sync_color_mode_label, sync_gizmo_axis_rotation,
+    toggle_light_attachment, toggle_theme_button, update_atom_hover_cache, update_atom_hover_label,
+    update_bond_order_legend, update_color_mode_availability, update_file_ui,
+    update_gizmo_viewport, update_scene, update_selected_atom_from_click,
 };
 use crate::ui::{setup_buttons, spawn_axis};
 
@@ -293,6 +294,13 @@ pub fn run_app() {
         .add_systems(Update, reset_camera_button_interaction)
         .add_systems(Update, handle_load_default_button)
         .add_systems(Update, handle_open_file_button)
+        .add_systems(Update, particle_picker_toggle_button)
+        .add_systems(Update, particle_picker_keyboard_search)
+        .add_systems(
+            Update,
+            refresh_particle_picker_panel.after(particle_picker_keyboard_search),
+        )
+        .add_systems(Update, particle_picker_result_buttons)
         .add_systems(Update, update_selected_atom_from_click)
         .add_systems(Update, update_color_mode_availability)
         .add_systems(
