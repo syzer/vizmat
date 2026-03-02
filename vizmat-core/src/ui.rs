@@ -1,6 +1,7 @@
 #![allow(clippy::needless_pass_by_value)]
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
 
 use bevy::ecs::system::SystemParam;
 use bevy::input::keyboard::{Key, KeyboardInput};
@@ -9,15 +10,23 @@ use bevy::input::ButtonState;
 use bevy::prelude::*;
 use bevy::render::camera::Viewport;
 use bevy::render::view::RenderLayers;
+use bevy::ui::FocusPolicy;
 use bevy::ui::RelativeCursorPosition;
+use crossbeam_channel::{Receiver, Sender};
+#[cfg(target_arch = "wasm32")]
+use gloo::net::http::Request;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_futures::spawn_local;
 
 use crate::constants::{get_element_color, get_element_size, get_residue_class_color};
+#[allow(unused_imports)]
+use crate::formats::parse_structure_by_extension;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::formats::SUPPORTED_EXTENSIONS;
-use crate::formats::{parse_structure_by_extension, SUPPORTED_EXTENSIONS_HELP};
+use crate::formats::SUPPORTED_EXTENSIONS_HELP;
 use crate::io::FileStatusKind;
 use crate::structure::{
-    resolve_bonds, AtomColorMode, AtomEntity, AtomIndex, BondEntity, BondInferenceSettings,
+    resolve_bonds, AtomColorMode, AtomEntity, AtomIndex, Bond, BondEntity, BondInferenceSettings,
     BondOrder, Crystal,
 };
 
@@ -26,10 +35,33 @@ const LAYER_CANVAS: RenderLayers = RenderLayers::layer(0);
 const GIZMO_VIEWPORT_SIZE_PX: u32 = 200;
 const GIZMO_VIEWPORT_MARGIN_PX: u32 = 10;
 const DEFAULT_PARTICLE_PATH: &str = "compounds/water.xyz";
+#[cfg(target_arch = "wasm32")]
+const DEFAULT_PARTICLES_ASSET_BASE_URL: &str = "assets/particles";
+const DEFAULT_PARTICLES_REMOTE_BASE_URL: &str =
+    "https://raw.githubusercontent.com/syzer/vizmat-particles/main";
 const EMBEDDED_PARTICLE_LIST: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../vizmat-app/assets/particles/list.txt"
 ));
+
+#[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub(crate) enum AppUiState {
+    #[default]
+    Startup,
+    Running,
+}
+
+#[derive(Component)]
+pub(crate) struct StartupScreenRoot;
+
+#[derive(Component)]
+pub(crate) struct HiddenOnStartup;
+
+#[derive(Component)]
+pub(crate) struct StartupTitleText;
+
+#[derive(Component)]
+pub(crate) struct StartupHelpText;
 
 #[derive(Component)]
 pub(crate) struct MainCamera;
@@ -101,6 +133,50 @@ pub(crate) struct HudHelpText;
 
 #[derive(Component)]
 pub(crate) struct HudLegendText;
+
+#[derive(Component)]
+pub(crate) struct ParticleLoadingOverlay;
+
+#[derive(Component)]
+pub(crate) struct ParticleLoadingTitle;
+
+#[derive(Component)]
+pub(crate) struct ParticleLoadingTelemetry;
+
+#[derive(Component)]
+pub(crate) struct ParticleLoadingProgressFill;
+
+#[derive(Debug)]
+pub(crate) struct CatalogLoadResult {
+    pub(crate) path: String,
+    pub(crate) source: String,
+    pub(crate) contents: Result<String, String>,
+}
+
+#[derive(Resource, Clone)]
+pub(crate) struct CatalogLoadChannel {
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    sender: Sender<CatalogLoadResult>,
+    receiver: Receiver<CatalogLoadResult>,
+}
+
+impl Default for CatalogLoadChannel {
+    fn default() -> Self {
+        let (sender, receiver) = crossbeam_channel::unbounded();
+        Self { sender, receiver }
+    }
+}
+
+impl CatalogLoadChannel {
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub(crate) fn send(&self, result: CatalogLoadResult) {
+        let _ = self.sender.send(result);
+    }
+
+    pub(crate) fn try_recv(&self) -> Option<CatalogLoadResult> {
+        self.receiver.try_recv().ok()
+    }
+}
 
 #[derive(Component)]
 pub(crate) struct BondToleranceSliderTrack;
@@ -490,7 +566,7 @@ fn compute_available_color_modes(
         modes.push(AtomColorMode::Residue);
     }
 
-    let (bonds, _) = resolve_bonds(crystal, bond_settings);
+    let bonds = bonds_for_color(crystal, bond_settings);
     if !bonds.is_empty() {
         let ring_atoms = compute_ring_atoms(crystal.atoms.len(), &bonds);
         let ring_count = ring_atoms.iter().filter(|&&v| v).count();
@@ -515,6 +591,20 @@ fn compute_available_color_modes(
     modes
 }
 
+fn bonds_for_color(crystal: &Crystal, bond_settings: &BondInferenceSettings) -> Vec<Bond> {
+    if bond_settings.enabled {
+        let (bonds, _) = resolve_bonds(crystal, bond_settings);
+        return bonds;
+    }
+
+    crystal
+        .bonds
+        .as_ref()
+        .filter(|b| !b.is_empty())
+        .cloned()
+        .unwrap_or_default()
+}
+
 pub(crate) fn update_atom_hover_cache(
     crystal: Option<Res<Crystal>>,
     bond_settings: Res<BondInferenceSettings>,
@@ -530,7 +620,7 @@ pub(crate) fn update_atom_hover_cache(
         return;
     }
 
-    let (bonds, _) = resolve_bonds(&crystal, &bond_settings);
+    let bonds = bonds_for_color(&crystal, &bond_settings);
     cache.degree = compute_atom_degree(crystal.atoms.len(), &bonds);
     cache.ring_atoms = compute_ring_atoms(crystal.atoms.len(), &bonds);
 }
@@ -680,6 +770,21 @@ type MainCameraChangedTransformQuery<'w, 's> = Query<
     (With<MainCamera>, Without<GizmoAxisRoot>, Changed<Transform>),
 >;
 
+type StartupThemeTextQueries<'w, 's> = (
+    Query<'w, 's, &'static mut TextColor, With<StartupTitleText>>,
+    Query<'w, 's, &'static mut TextColor, With<StartupHelpText>>,
+);
+
+type ParticleLoadingTextQueries<'w, 's> = (
+    Query<'w, 's, &'static mut Text, With<ParticleLoadingTitle>>,
+    Query<'w, 's, &'static mut Text, With<ParticleLoadingTelemetry>>,
+);
+
+type ParticleLoadingNodeQueries<'w, 's> = (
+    Query<'w, 's, &'static mut Node, With<ParticleLoadingOverlay>>,
+    Query<'w, 's, &'static mut Node, With<ParticleLoadingProgressFill>>,
+);
+
 fn parse_embedded_particle_entries() -> Vec<String> {
     EMBEDDED_PARTICLE_LIST
         .lines()
@@ -707,77 +812,158 @@ fn filtered_particle_entries(state: &ParticlePickerState) -> Vec<String> {
         .collect()
 }
 
-fn embedded_particle_contents(path: &str) -> Option<&'static str> {
-    match path {
-        "compounds/water.xyz" => Some(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../vizmat-app/assets/particles/compounds/water.xyz"
-        ))),
-        "compounds/ESM.sdf" => Some(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../vizmat-app/assets/particles/compounds/ESM.sdf"
-        ))),
-        "compounds/NAX.sdf" => Some(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../vizmat-app/assets/particles/compounds/NAX.sdf"
-        ))),
-        "compounds/cyclosporin_a.sdf" => Some(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../vizmat-app/assets/particles/compounds/cyclosporin_a.sdf"
-        ))),
-        "compounds/esomeprazole.xyz" => Some(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../vizmat-app/assets/particles/compounds/esomeprazole.xyz"
-        ))),
-        "compounds/naproxen.xyz" => Some(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../vizmat-app/assets/particles/compounds/naproxen.xyz"
-        ))),
-        "compounds/vancomycin.sdf" => Some(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../vizmat-app/assets/particles/compounds/vancomycin.sdf"
-        ))),
-        "proteins/3J3A.pdb" => Some(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../vizmat-app/assets/particles/proteins/3J3A.pdb"
-        ))),
-        "proteins/3J3A.xyz" => Some(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../vizmat-app/assets/particles/proteins/3J3A.xyz"
-        ))),
-        "proteins/4HHB.pdb" => Some(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../vizmat-app/assets/particles/proteins/4HHB.pdb"
-        ))),
-        "proteins/4HHB.xyz" => Some(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../vizmat-app/assets/particles/proteins/4HHB.xyz"
-        ))),
-        "proteins/4V6F.pdb" => Some(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../vizmat-app/assets/particles/proteins/4V6F.pdb"
-        ))),
-        "proteins/4V6F.xyz" => Some(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../vizmat-app/assets/particles/proteins/4V6F.xyz"
-        ))),
-        "proteins/6VXX.pdb" => Some(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../vizmat-app/assets/particles/proteins/6VXX.pdb"
-        ))),
-        "proteins/6VXX.xyz" => Some(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../vizmat-app/assets/particles/proteins/6VXX.xyz"
-        ))),
-        "proteins/7K00.pdb" => Some(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../vizmat-app/assets/particles/proteins/7K00.pdb"
-        ))),
-        "proteins/7K00.xyz" => Some(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../vizmat-app/assets/particles/proteins/7K00.xyz"
-        ))),
-        _ => None,
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+fn particles_local_dir() -> &'static str {
+    option_env!("VIZMAT_PARTICLES_LOCAL_DIR").unwrap_or(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../vizmat-app/assets/particles"
+    ))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn particles_asset_base_url() -> &'static str {
+    option_env!("VIZMAT_PARTICLES_ASSET_BASE_URL").unwrap_or(DEFAULT_PARTICLES_ASSET_BASE_URL)
+}
+
+fn particles_remote_base_url() -> &'static str {
+    option_env!("VIZMAT_PARTICLES_REMOTE_BASE_URL").unwrap_or(DEFAULT_PARTICLES_REMOTE_BASE_URL)
+}
+
+fn particle_remote_url(path: &str) -> String {
+    format!("{}/{}", particles_remote_base_url(), path)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn particle_local_asset_url(path: &str) -> String {
+    format!("{}/{}", particles_asset_base_url(), path)
+}
+
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+fn particle_local_asset_path(path: &str) -> PathBuf {
+    PathBuf::from(particles_local_dir()).join(path)
+}
+
+fn set_catalog_loaded_status(path: &str, atom_count: usize, file_bond_count: usize) -> String {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    if file_bond_count > 0 {
+        format!("Loaded: {name} ({atom_count} atoms, {file_bond_count} file bonds)")
+    } else {
+        format!("Loaded: {name} ({atom_count} atoms)")
+    }
+}
+
+fn parse_and_store_catalog_particle(
+    path: &str,
+    contents: &str,
+    source: &str,
+    file_drag_drop: &mut crate::io::FileDragDrop,
+) -> bool {
+    let ext = path
+        .rsplit('.')
+        .next()
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    match parse_structure_by_extension(&ext, contents) {
+        Ok(crystal) => {
+            let atom_count = crystal.atoms.len();
+            let file_bond_count = crystal.bonds.as_ref().map_or(0, Vec::len);
+            file_drag_drop.loaded_crystal = Some(crystal);
+            file_drag_drop.status_message =
+                set_catalog_loaded_status(path, atom_count, file_bond_count);
+            file_drag_drop.status_kind = FileStatusKind::Success;
+            info!(
+                "Particle picker: loaded '{path}' from {source} with {atom_count} atoms and {file_bond_count} file bonds"
+            );
+            true
+        }
+        Err(err) => {
+            warn!("Particle picker: parse error for '{path}' from {source}: {err}");
+            file_drag_drop.status_message = format!("Parse error: {err}");
+            file_drag_drop.status_kind = FileStatusKind::Error;
+            false
+        }
+    }
+}
+
+pub(crate) fn setup_startup_screen(mut commands: Commands) {
+    commands
+        .spawn((
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                padding: UiRect::axes(Val::Px(24.0), Val::Px(24.0)),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            GlobalZIndex(-10),
+            FocusPolicy::Pass,
+            BackgroundColor(Color::NONE),
+            StartupScreenRoot,
+        ))
+        .with_children(|root| {
+            root.spawn((
+                Node {
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    row_gap: Val::Px(10.0),
+                    ..default()
+                },
+                BackgroundColor(Color::NONE),
+            ))
+            .with_children(|content| {
+                content.spawn((
+                    Text::new("VIZMAT"),
+                    TextFont {
+                        font_size: 50.0,
+                        ..default()
+                    },
+                    TextLayout::new_with_justify(JustifyText::Center),
+                    TextColor(Color::WHITE),
+                    StartupTitleText,
+                ));
+                content.spawn((
+                    Text::new("Click: Load Particle\nor drag and drop a file to start"),
+                    TextFont {
+                        font_size: 24.0,
+                        ..default()
+                    },
+                    TextLayout::new_with_justify(JustifyText::Center),
+                    TextColor(Color::WHITE),
+                    StartupHelpText,
+                ));
+            });
+        });
+}
+
+pub(crate) fn cleanup_startup_screen(
+    mut commands: Commands,
+    startup_query: Query<Entity, With<StartupScreenRoot>>,
+) {
+    for entity in &startup_query {
+        commands.entity(entity).despawn();
+    }
+}
+
+pub(crate) fn hide_non_startup_controls(mut controls: Query<&mut Node, With<HiddenOnStartup>>) {
+    for mut node in &mut controls {
+        node.display = Display::None;
+    }
+}
+
+pub(crate) fn show_non_startup_controls(mut controls: Query<&mut Node, With<HiddenOnStartup>>) {
+    for mut node in &mut controls {
+        node.display = Display::Flex;
+    }
+}
+
+pub(crate) fn transition_to_running_on_structure_loaded(
+    crystal: Option<Res<Crystal>>,
+    file_drag_drop: Res<crate::io::FileDragDrop>,
+    mut next_ui_state: ResMut<NextState<AppUiState>>,
+) {
+    if crystal.is_some() || file_drag_drop.loaded_crystal.is_some() {
+        next_ui_state.set(AppUiState::Running);
     }
 }
 
@@ -863,9 +1049,11 @@ pub(crate) fn setup_file_ui(mut commands: Commands, mut font_assets: ResMut<Asse
                         border: UiRect::all(Val::Px(1.0)),
                         ..default()
                     },
+                    Visibility::Visible,
                     BorderColor(p.border),
                     BackgroundColor(p.button_bg),
                     ColorModeButton,
+                    HiddenOnStartup,
                     HudButton,
                 ))
                 .with_children(|button| {
@@ -888,9 +1076,11 @@ pub(crate) fn setup_file_ui(mut commands: Commands, mut font_assets: ResMut<Asse
                         border: UiRect::all(Val::Px(1.0)),
                         ..default()
                     },
+                    Visibility::Visible,
                     BorderColor(p.border),
                     BackgroundColor(p.button_bg),
                     ResetCameraButton,
+                    HiddenOnStartup,
                     HudButton,
                 ))
                 .with_children(|button| {
@@ -913,9 +1103,11 @@ pub(crate) fn setup_file_ui(mut commands: Commands, mut font_assets: ResMut<Asse
                         border: UiRect::all(Val::Px(1.0)),
                         ..default()
                     },
+                    Visibility::Visible,
                     BorderColor(p.border),
                     BackgroundColor(p.button_bg),
                     LightAttachmentButton { attached: false },
+                    HiddenOnStartup,
                     HudButton,
                 ))
                 .with_children(|button| {
@@ -938,9 +1130,11 @@ pub(crate) fn setup_file_ui(mut commands: Commands, mut font_assets: ResMut<Asse
                         border: UiRect::all(Val::Px(1.0)),
                         ..default()
                     },
+                    Visibility::Visible,
                     BorderColor(p.border),
                     BackgroundColor(p.button_bg),
                     BondToggleButton,
+                    HiddenOnStartup,
                     HudButton,
                 ))
                 .with_children(|button| {
@@ -966,10 +1160,12 @@ pub(crate) fn setup_file_ui(mut commands: Commands, mut font_assets: ResMut<Asse
                         align_items: AlignItems::Stretch,
                         ..default()
                     },
+                    Visibility::Visible,
                     BorderColor(p.border),
                     BackgroundColor(Color::srgba(0.5, 0.5, 0.5, 0.15)),
                     RelativeCursorPosition::default(),
                     BondToleranceSliderTrack,
+                    HiddenOnStartup,
                 ))
                 .with_children(|track| {
                     track.spawn((
@@ -989,9 +1185,11 @@ pub(crate) fn setup_file_ui(mut commands: Commands, mut font_assets: ResMut<Asse
                         font_size: 12.0,
                         ..default()
                     },
+                    Visibility::Visible,
                     TextColor(p.text),
                     HudButtonLabel,
                     BondToleranceText,
+                    HiddenOnStartup,
                 ));
             });
 
@@ -1010,8 +1208,10 @@ pub(crate) fn setup_file_ui(mut commands: Commands, mut font_assets: ResMut<Asse
                         font_size: 12.0,
                         ..default()
                     },
+                    Visibility::Visible,
                     TextColor(p.text),
                     FileUploadText,
+                    HiddenOnStartup,
                 ));
 
                 right
@@ -1045,6 +1245,84 @@ pub(crate) fn setup_file_ui(mut commands: Commands, mut font_assets: ResMut<Asse
                         ));
                     });
             });
+        });
+
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(0.0),
+                left: Val::Px(0.0),
+                right: Val::Px(0.0),
+                bottom: Val::Px(0.0),
+                display: Display::None,
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            GlobalZIndex(20),
+            FocusPolicy::Pass,
+            BackgroundColor(Color::NONE),
+            ParticleLoadingOverlay,
+        ))
+        .with_children(|overlay| {
+            overlay
+                .spawn((
+                    Node {
+                        flex_direction: FlexDirection::Column,
+                        align_items: AlignItems::Center,
+                        row_gap: Val::Px(10.0),
+                        padding: UiRect::all(Val::Px(14.0)),
+                        border: UiRect::all(Val::Px(1.0)),
+                        ..default()
+                    },
+                    BorderColor(p.border),
+                    BackgroundColor(p.bar_bg_alt),
+                ))
+                .with_children(|panel| {
+                    panel.spawn((
+                        Text::new("Calibrating molecule..."),
+                        TextFont {
+                            font_size: 16.0,
+                            ..default()
+                        },
+                        TextColor(p.text),
+                        ParticleLoadingTitle,
+                    ));
+                    panel
+                        .spawn((
+                            Node {
+                                width: Val::Px(240.0),
+                                height: Val::Px(6.0),
+                                border: UiRect::all(Val::Px(1.0)),
+                                justify_content: JustifyContent::FlexStart,
+                                align_items: AlignItems::Stretch,
+                                ..default()
+                            },
+                            BorderColor(p.border),
+                            BackgroundColor(Color::srgba(0.5, 0.5, 0.5, 0.18)),
+                        ))
+                        .with_children(|track| {
+                            track.spawn((
+                                Node {
+                                    width: Val::Percent(35.0),
+                                    height: Val::Percent(100.0),
+                                    ..default()
+                                },
+                                BackgroundColor(p.slider_fill),
+                                ParticleLoadingProgressFill,
+                            ));
+                        });
+                    panel.spawn((
+                        Text::new("Fetching structure..."),
+                        TextFont {
+                            font_size: 12.0,
+                            ..default()
+                        },
+                        TextColor(p.text_muted),
+                        ParticleLoadingTelemetry,
+                    ));
+                });
         });
 
     commands
@@ -1185,18 +1463,110 @@ pub(crate) fn setup_file_ui(mut commands: Commands, mut font_assets: ResMut<Asse
 }
 
 // System to update file upload UI
+fn status_message_for_hud(status: &str, kind: FileStatusKind) -> String {
+    match kind {
+        FileStatusKind::Info => {
+            if status.starts_with("Loading:") {
+                "Loading particle...".to_string()
+            } else {
+                status.to_string()
+            }
+        }
+        FileStatusKind::Success => status.to_string(),
+        FileStatusKind::Error => {
+            if status.starts_with("Load error") {
+                "Could not load particle from remote library. Check connection and try again."
+                    .to_string()
+            } else if status.starts_with("Read error:") {
+                "Could not read particle source. Check path or network and try again.".to_string()
+            } else if status.starts_with("Parse error:") {
+                "Could not parse that structure file. Try a different file.".to_string()
+            } else if status.starts_with("Unsupported file.") {
+                format!("Unsupported file. Use {}.", SUPPORTED_EXTENSIONS_HELP)
+            } else {
+                "Load failed. Try again with another particle.".to_string()
+            }
+        }
+    }
+}
+
 pub(crate) fn update_file_ui(
     file_drag_drop: Res<crate::io::FileDragDrop>,
     theme: Res<UiTheme>,
     mut text_query: Query<(&mut Text, &mut TextColor), With<FileUploadText>>,
 ) {
     if let Ok((mut text, mut color)) = text_query.single_mut() {
-        **text = file_drag_drop.status_message.clone();
+        **text = status_message_for_hud(&file_drag_drop.status_message, file_drag_drop.status_kind);
         *color = match file_drag_drop.status_kind {
             FileStatusKind::Info => TextColor(theme_palette(theme.mode).text),
             FileStatusKind::Success => TextColor(Color::srgb(0.20, 0.72, 0.34)),
             FileStatusKind::Error => TextColor(Color::srgb(0.90, 0.20, 0.22)),
         };
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn update_particle_loading_overlay(
+    file_drag_drop: Res<crate::io::FileDragDrop>,
+    time: Res<Time>,
+    _theme: Res<UiTheme>,
+    mut node_queries: ParamSet<ParticleLoadingNodeQueries<'_, '_>>,
+    mut text_queries: ParamSet<ParticleLoadingTextQueries<'_, '_>>,
+) {
+    let status = file_drag_drop.status_message.as_str();
+    let is_visible = status.starts_with("Loading:");
+    let mut overlay_query = node_queries.p0();
+    let Ok(mut overlay) = overlay_query.single_mut() else {
+        return;
+    };
+    overlay.display = if is_visible {
+        Display::Flex
+    } else {
+        Display::None
+    };
+    if !is_visible {
+        return;
+    }
+
+    for mut text in &mut text_queries.p0() {
+        text.0 = "Calibrating molecule...".to_string();
+    }
+    for mut text in &mut text_queries.p1() {
+        text.0 = "Fetching structure...".to_string();
+    }
+    let mut fill_query = node_queries.p1();
+    if let Ok(mut fill) = fill_query.single_mut() {
+        let phase = (time.elapsed_secs() * 1.4).sin() * 0.5 + 0.5;
+        let width = 25.0 + phase * 55.0;
+        fill.width = Val::Percent(width);
+    }
+}
+
+pub(crate) fn handle_catalog_load_results(
+    mut file_drag_drop: ResMut<crate::io::FileDragDrop>,
+    catalog_channel: Option<Res<CatalogLoadChannel>>,
+) {
+    let Some(channel) = catalog_channel else {
+        return;
+    };
+    while let Some(result) = channel.try_recv() {
+        match result.contents {
+            Ok(contents) => {
+                if parse_and_store_catalog_particle(
+                    &result.path,
+                    &contents,
+                    &result.source,
+                    &mut file_drag_drop,
+                ) {
+                    file_drag_drop.dragged_file = None;
+                }
+            }
+            Err(err) => {
+                let name = result.path.rsplit('/').next().unwrap_or(&result.path);
+                file_drag_drop.status_message = format!("Load error ({name}): {err}");
+                file_drag_drop.status_kind = FileStatusKind::Error;
+            }
+        }
     }
 }
 
@@ -1212,6 +1582,7 @@ pub(crate) fn bond_tolerance_controls(
     mut text_queries: ParamSet<(
         Query<&mut Text, With<BondToleranceText>>,
         Query<&mut Text, With<BondToggleLabel>>,
+        Query<&mut Visibility, With<BondToleranceText>>,
     )>,
     mut node_queries: ParamSet<(
         Query<&mut Node, With<BondToleranceSliderTrack>>,
@@ -1259,11 +1630,12 @@ pub(crate) fn bond_tolerance_controls(
         }
     }
 
+    let show_tolerance_controls = settings.enabled && !using_file_bonds;
     if let Ok(mut slider_track) = node_queries.p0().single_mut() {
-        slider_track.display = if using_file_bonds {
-            Display::None
-        } else {
+        slider_track.display = if show_tolerance_controls {
             Display::Flex
+        } else {
+            Display::None
         };
     }
     if let Ok(mut text) = text_queries.p0().single_mut() {
@@ -1271,6 +1643,13 @@ pub(crate) fn bond_tolerance_controls(
             "File".into()
         } else {
             format!("{:.2}", settings.ui_tolerance_scale)
+        };
+    }
+    if let Ok(mut value_visibility) = text_queries.p2().single_mut() {
+        *value_visibility = if show_tolerance_controls {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
         };
     }
     if let Ok(mut text) = text_queries.p1().single_mut() {
@@ -1443,6 +1822,22 @@ pub(crate) fn apply_theme_to_hud(
     }
 }
 
+pub(crate) fn apply_theme_to_startup_screen(
+    theme: Res<UiTheme>,
+    mut startup_text_queries: ParamSet<StartupThemeTextQueries<'_, '_>>,
+) {
+    if !theme.is_changed() {
+        return;
+    }
+    let p = theme_palette(theme.mode);
+    for mut color in &mut startup_text_queries.p0() {
+        *color = TextColor(p.text);
+    }
+    for mut color in &mut startup_text_queries.p1() {
+        *color = TextColor(p.text_muted);
+    }
+}
+
 /// Button that resets the camera to its original position/orientation.
 #[derive(Component)]
 pub(crate) struct ResetCameraButton;
@@ -1547,35 +1942,114 @@ pub fn clear_old_atoms(mut commands: Commands, atom_query: Query<Entity, With<At
     }
 }
 
-fn load_particle_from_catalog_path(path: &str, file_drag_drop: &mut crate::io::FileDragDrop) {
-    let Some(contents) = embedded_particle_contents(path) else {
-        file_drag_drop.status_message = format!("Missing embedded file: {path}");
-        file_drag_drop.status_kind = FileStatusKind::Error;
-        return;
-    };
-    let ext = path
-        .rsplit('.')
-        .next()
-        .map(str::to_ascii_lowercase)
-        .unwrap_or_default();
-    match parse_structure_by_extension(&ext, contents) {
-        Ok(crystal) => {
-            let atom_count = crystal.atoms.len();
-            let file_bond_count = crystal.bonds.as_ref().map_or(0, Vec::len);
-            let name = path.rsplit('/').next().unwrap_or(path);
-            file_drag_drop.loaded_crystal = Some(crystal);
-            file_drag_drop.dragged_file = None;
-            file_drag_drop.status_message = if file_bond_count > 0 {
-                format!("Loaded: {name} ({atom_count} atoms, {file_bond_count} file bonds)")
-            } else {
-                format!("Loaded: {name} ({atom_count} atoms)")
+fn load_particle_from_catalog_path(
+    path: &str,
+    file_drag_drop: &mut crate::io::FileDragDrop,
+    catalog_channel: Option<&CatalogLoadChannel>,
+) {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    file_drag_drop.status_message = format!("Loading: {name}");
+    file_drag_drop.status_kind = FileStatusKind::Info;
+
+    #[cfg(target_arch = "wasm32")]
+    let _ = catalog_channel;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let local_path = particle_local_asset_path(path);
+        match std::fs::read_to_string(&local_path) {
+            Ok(contents) => {
+                if parse_and_store_catalog_particle(path, &contents, "local disk", file_drag_drop) {
+                    file_drag_drop.dragged_file = Some(local_path);
+                }
+            }
+            Err(err) => {
+                warn!(
+                    "Particle picker: read error for '{path}' at '{}': {err}",
+                    local_path.display()
+                );
+                let Some(channel) = catalog_channel else {
+                    file_drag_drop.status_message =
+                        format!("Read error: {err}. Remote fallback unavailable.");
+                    file_drag_drop.status_kind = FileStatusKind::Error;
+                    return;
+                };
+                let path_owned = path.to_string();
+                let remote_url = particle_remote_url(path);
+                let sender = channel.clone();
+                std::thread::spawn(move || {
+                    let result = match reqwest::blocking::get(&remote_url) {
+                        Ok(response) => {
+                            if response.status().is_success() {
+                                response.text().map_err(|e| format!("Read error: {e}"))
+                            } else {
+                                Err(format!(
+                                    "HTTP {} while loading remote particle",
+                                    response.status()
+                                ))
+                            }
+                        }
+                        Err(remote_err) => Err(format!("Network error: {remote_err}")),
+                    };
+                    sender.send(CatalogLoadResult {
+                        path: path_owned,
+                        source: "remote fallback".to_string(),
+                        contents: result,
+                    });
+                });
+            }
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        let path_owned = path.to_string();
+        spawn_local(async move {
+            let local_url = particle_local_asset_url(&path_owned);
+            let remote_url = particle_remote_url(&path_owned);
+
+            async fn fetch_text(url: String) -> anyhow::Result<String> {
+                let resp = Request::get(&url).send().await?;
+                if !resp.ok() {
+                    anyhow::bail!("HTTP {} while loading {url}", resp.status());
+                }
+                let text = resp.text().await?;
+                let trimmed = text.trim_start();
+                let prefix: String = trimmed.chars().take(256).collect();
+                let prefix_lower = prefix.to_ascii_lowercase();
+                if prefix_lower.starts_with("<!doctype")
+                    || prefix_lower.starts_with("<html")
+                    || prefix_lower.starts_with("<head")
+                    || prefix_lower.starts_with("<body")
+                {
+                    anyhow::bail!("Unexpected HTML response while loading {url}");
+                }
+                Ok(text)
+            }
+
+            let result = match fetch_text(local_url).await {
+                Ok(text) => Ok(text),
+                Err(err) => {
+                    warn!("Particle picker: local URL failed, trying remote fallback: {err}");
+                    fetch_text(remote_url).await
+                }
             };
-            file_drag_drop.status_kind = FileStatusKind::Success;
-        }
-        Err(err) => {
-            file_drag_drop.status_message = format!("Parse error: {err}");
-            file_drag_drop.status_kind = FileStatusKind::Error;
-        }
+
+            match result {
+                Ok(text) => crate::send_event(crate::WebEvent::Drop {
+                    name: path_owned,
+                    data: text.into_bytes(),
+                    mime_type: "text/plain".to_string(),
+                }),
+                Err(err) => {
+                    warn!("Particle picker: web fetch failed for '{path_owned}': {err}");
+                    crate::send_event(crate::WebEvent::CatalogLoadError {
+                        path: path_owned,
+                        message: format!("{err}"),
+                    })
+                }
+            };
+        });
     }
 }
 
@@ -1611,6 +2085,7 @@ pub(crate) fn particle_picker_keyboard_search(
     mut keyboard_events: EventReader<KeyboardInput>,
     mut picker: ResMut<ParticlePickerState>,
     mut file_drag_drop: ResMut<crate::io::FileDragDrop>,
+    catalog_channel: Option<Res<CatalogLoadChannel>>,
 ) {
     if !picker.visible {
         return;
@@ -1630,7 +2105,11 @@ pub(crate) fn particle_picker_keyboard_search(
             }
             Key::Enter => {
                 if let Some(first) = filtered_particle_entries(&picker).first().cloned() {
-                    load_particle_from_catalog_path(&first, &mut file_drag_drop);
+                    load_particle_from_catalog_path(
+                        &first,
+                        &mut file_drag_drop,
+                        catalog_channel.as_deref(),
+                    );
                     picker.visible = false;
                 }
             }
@@ -1738,13 +2217,18 @@ pub(crate) fn particle_picker_result_buttons(
     >,
     mut picker: ResMut<ParticlePickerState>,
     mut file_drag_drop: ResMut<crate::io::FileDragDrop>,
+    catalog_channel: Option<Res<CatalogLoadChannel>>,
     theme: Res<UiTheme>,
 ) {
     for (interaction, selected, mut background) in &mut interaction_query {
         match *interaction {
             Interaction::Pressed => {
                 *background = BackgroundColor(themed_button_bg(theme.mode, Interaction::Pressed));
-                load_particle_from_catalog_path(&selected.path, &mut file_drag_drop);
+                load_particle_from_catalog_path(
+                    &selected.path,
+                    &mut file_drag_drop,
+                    catalog_channel.as_deref(),
+                );
                 picker.visible = false;
             }
             Interaction::Hovered => {
@@ -1959,15 +2443,16 @@ fn spawn_atoms(
 
     // Create materials for different elements
     let mut element_materials: HashMap<String, Handle<StandardMaterial>> = HashMap::new();
-    let (bonds, _source) = resolve_bonds(crystal, bond_settings);
-    let ring_atoms = compute_ring_atoms(crystal.atoms.len(), &bonds);
-    let bond_env_atoms = compute_bond_env_atoms(crystal.atoms.len(), &bonds);
+    let (render_bonds, _source) = resolve_bonds(crystal, bond_settings);
+    let color_bonds = bonds_for_color(crystal, bond_settings);
+    let ring_atoms = compute_ring_atoms(crystal.atoms.len(), &color_bonds);
+    let bond_env_atoms = compute_bond_env_atoms(crystal.atoms.len(), &color_bonds);
     let functional_groups =
-        compute_functional_groups(crystal, &bonds, &ring_atoms, &bond_env_atoms);
+        compute_functional_groups(crystal, &color_bonds, &ring_atoms, &bond_env_atoms);
     let mut bond_materials: HashMap<u8, Handle<StandardMaterial>> = HashMap::new();
 
     commands.entity(root_entity).with_children(|parent| {
-        for bond in &bonds {
+        for bond in &render_bonds {
             let a = &crystal.atoms[bond.a];
             let b = &crystal.atoms[bond.b];
             let pa = Vec3::new(a.x, a.y, a.z);
@@ -2752,6 +3237,8 @@ pub fn reset_camera_button_interaction(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::io::FileDragDrop;
+    use crate::structure::{Atom, Crystal};
 
     #[test]
     fn bond_tolerance_controls_system_runs_without_query_conflicts() {
@@ -2782,6 +3269,141 @@ mod tests {
             .spawn((BondToggleLabel, Text::new(""), TextColor(Color::WHITE)));
 
         app.add_systems(Update, bond_tolerance_controls);
+        app.update();
+    }
+
+    #[test]
+    fn startup_screen_spawns_hello_label() {
+        let mut app = App::new();
+        app.add_systems(Startup, setup_startup_screen);
+        app.update();
+
+        let hello_count = app
+            .world()
+            .iter_entities()
+            .filter_map(|entity| entity.get::<Text>())
+            .filter(|text| text.0.contains("Load Particle"))
+            .count();
+        assert_eq!(
+            hello_count, 1,
+            "startup screen should show startup instructions"
+        );
+    }
+
+    #[test]
+    fn startup_state_transitions_to_running_when_structure_is_loaded() {
+        let mut app = App::new();
+        app.add_plugins(bevy::state::app::StatesPlugin);
+        app.insert_resource(FileDragDrop::default());
+        app.init_state::<AppUiState>();
+        app.add_systems(Update, transition_to_running_on_structure_loaded);
+
+        app.world_mut()
+            .resource_mut::<FileDragDrop>()
+            .loaded_crystal = Some(Crystal {
+            atoms: vec![Atom {
+                element: "H".to_string(),
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                chain_id: None,
+                res_name: None,
+            }],
+            bonds: None,
+        });
+
+        app.update();
+        app.update();
+
+        let state = app.world().resource::<State<AppUiState>>();
+        assert_eq!(state.get(), &AppUiState::Running);
+    }
+
+    #[test]
+    fn startup_screen_is_cleaned_up_after_transition() {
+        let mut app = App::new();
+        app.add_plugins(bevy::state::app::StatesPlugin);
+        app.insert_resource(FileDragDrop::default());
+        app.init_state::<AppUiState>();
+        app.add_systems(OnEnter(AppUiState::Startup), setup_startup_screen);
+        app.add_systems(OnExit(AppUiState::Startup), cleanup_startup_screen);
+        app.add_systems(Update, transition_to_running_on_structure_loaded);
+
+        app.update();
+        let startup_count_before = app
+            .world()
+            .iter_entities()
+            .filter(|entity| entity.contains::<StartupScreenRoot>())
+            .count();
+        assert_eq!(startup_count_before, 1);
+
+        app.world_mut()
+            .resource_mut::<FileDragDrop>()
+            .loaded_crystal = Some(Crystal {
+            atoms: vec![Atom {
+                element: "H".to_string(),
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                chain_id: None,
+                res_name: None,
+            }],
+            bonds: None,
+        });
+
+        app.update();
+        app.update();
+
+        let startup_count_after = app
+            .world()
+            .iter_entities()
+            .filter(|entity| entity.contains::<StartupScreenRoot>())
+            .count();
+        assert_eq!(startup_count_after, 0);
+    }
+
+    #[test]
+    fn startup_theme_system_runs_without_query_conflicts() {
+        let mut app = App::new();
+        app.insert_resource(UiTheme {
+            mode: ThemeMode::Dark,
+        });
+        app.world_mut()
+            .spawn((StartupTitleText, TextColor(Color::WHITE)));
+        app.world_mut()
+            .spawn((StartupHelpText, TextColor(Color::WHITE)));
+
+        app.add_systems(Update, apply_theme_to_startup_screen);
+
+        app.world_mut().resource_mut::<UiTheme>().mode = ThemeMode::Light;
+        app.update();
+    }
+
+    #[test]
+    fn hud_status_message_is_user_friendly_for_errors() {
+        let msg = status_message_for_hud("Read error: missing file", FileStatusKind::Error);
+        assert!(msg.contains("Could not read particle source"));
+        let msg = status_message_for_hud("Parse error: bad token", FileStatusKind::Error);
+        assert!(msg.contains("Could not parse"));
+    }
+
+    #[test]
+    fn particle_loading_overlay_system_runs_without_query_conflicts() {
+        let mut app = App::new();
+        app.init_resource::<Time>();
+        app.insert_resource(UiTheme {
+            mode: ThemeMode::Dark,
+        });
+        app.insert_resource(crate::io::FileDragDrop::default());
+
+        app.world_mut()
+            .spawn((ParticleLoadingOverlay, Node::default()));
+        app.world_mut().spawn((ParticleLoadingTitle, Text::new("")));
+        app.world_mut()
+            .spawn((ParticleLoadingTelemetry, Text::new("")));
+        app.world_mut()
+            .spawn((ParticleLoadingProgressFill, Node::default()));
+        app.add_systems(Update, update_particle_loading_overlay);
         app.update();
     }
 }
