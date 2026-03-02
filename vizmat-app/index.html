@@ -208,6 +208,7 @@
     data-bin="vizmat-app"
     data-cargo-no-default-features="true" />
     <link data-trunk rel="copy-dir" href="assets" />
+    <link data-trunk rel="copy-file" href="index.js" />
     <h1 class="site-title">vizmat <span>molecule / crystal</span> visual lab</h1>
     <header>
       <a href="https://github.com/rs4rse/vizmat" target="_blank">
@@ -252,7 +253,12 @@
         };
 
         // Trunk injects a startup script and emits this event after WASM init.
-        window.addEventListener("TrunkApplicationStarted", hideLoader, { once: true });
+        // If the event fired before this listener was added, hide immediately.
+        if (window.wasmBindings) {
+          hideLoader();
+        } else {
+          window.addEventListener("TrunkApplicationStarted", hideLoader, { once: true });
+        }
 
         // Fallback so users are not stuck forever if startup event never fires.
         window.setTimeout(() => {
