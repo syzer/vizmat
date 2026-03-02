@@ -23,21 +23,21 @@ use crate::formats::{
 };
 use crate::io::{handle_file_drag_drop, load_dropped_file, update_crystal_from_file, FileDragDrop};
 use crate::structure::{
-    update_crystal_system, AtomColorMode, BondInferenceSettings, UpdateStructure,
+    update_crystal_system, AtomColorMode, BondInferenceSettings, Crystal, UpdateStructure,
 };
 use crate::ui::{
     apply_bond_tolerance_debounce, apply_theme_to_atom_hover_panel, apply_theme_to_hud,
     apply_theme_to_startup_screen, auto_reset_view_on_crystal_change, bond_tolerance_controls,
-    camera_controls, cleanup_startup_screen, color_mode_button, handle_load_default_button,
-    handle_open_file_button, hide_non_startup_controls, particle_picker_keyboard_search,
-    particle_picker_result_buttons, particle_picker_toggle_button, refresh_particle_picker_panel,
-    reset_camera_button_interaction, setup_cameras, setup_file_ui, setup_light,
-    setup_startup_screen, show_non_startup_controls, sync_atom_selection_highlight,
+    camera_controls, cleanup_startup_screen, color_mode_button, handle_catalog_load_results,
+    handle_load_default_button, handle_open_file_button, hide_non_startup_controls,
+    particle_picker_keyboard_search, particle_picker_result_buttons, particle_picker_toggle_button,
+    refresh_particle_picker_panel, reset_camera_button_interaction, setup_cameras, setup_file_ui,
+    setup_light, setup_startup_screen, show_non_startup_controls, sync_atom_selection_highlight,
     sync_color_mode_label, sync_gizmo_axis_rotation, toggle_light_attachment, toggle_theme_button,
     transition_to_running_on_structure_loaded, update_atom_hover_cache, update_atom_hover_label,
     update_bond_order_legend, update_color_mode_availability, update_file_ui,
-    update_gizmo_viewport, update_particle_loading_indicator, update_scene,
-    update_selected_atom_from_click, AppUiState,
+    update_gizmo_viewport, update_particle_loading_overlay, update_scene,
+    update_selected_atom_from_click, AppUiState, CatalogLoadChannel,
 };
 use crate::ui::{setup_buttons, spawn_axis};
 
@@ -271,6 +271,7 @@ pub fn run_app() {
             dom_drop_element_id: String::from("bevy-canvas"),
         })
         .init_resource::<FileDragDrop>()
+        .init_resource::<CatalogLoadChannel>()
         .init_resource::<AtomColorMode>()
         .init_resource::<BondInferenceSettings>()
         .init_state::<AppUiState>()
@@ -302,7 +303,8 @@ pub fn run_app() {
             ),
         )
         .add_systems(Update, update_file_ui)
-        .add_systems(Update, update_particle_loading_indicator)
+        .add_systems(Update, update_particle_loading_overlay)
+        .add_systems(Update, handle_catalog_load_results)
         .add_systems(
             Update,
             transition_to_running_on_structure_loaded.run_if(in_state(AppUiState::Startup)),
@@ -399,37 +401,23 @@ fn web_event_observer(trigger: Trigger<WebEvent>, mut file_drag_drop: ResMut<Fil
             mime_type,
         } => {
             let ext = name.rsplit('.').next().unwrap_or_default();
-            if is_supported_extension(ext) {
-                let contents = String::from_utf8_lossy(data);
-                let parsed = parse_structure_by_extension(ext, &contents);
-                match parsed {
-                    Ok(crystal) => {
-                        let atom_count = crystal.atoms.len();
-                        let file_bond_count = crystal.bonds.as_ref().map_or(0, Vec::len);
-                        file_drag_drop.dragged_file = None;
-                        file_drag_drop.loaded_crystal = Some(crystal);
-                        file_drag_drop.status_message = if file_bond_count > 0 {
-                            format!(
-                                "Loaded: {name} ({atom_count} atoms, {file_bond_count} file bonds)"
-                            )
-                        } else {
-                            format!("Loaded: {name} ({atom_count} atoms)")
-                        };
-                        file_drag_drop.status_kind = crate::io::FileStatusKind::Success;
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to parse structure file: {}", e);
-                        file_drag_drop.status_message = format!("Parse error: {e}");
-                        file_drag_drop.status_kind = crate::io::FileStatusKind::Error;
-                    }
-                }
-            } else {
-                file_drag_drop.status_message = format!(
-                    "Unsupported file. Please drop {}",
-                    SUPPORTED_EXTENSIONS_HELP
+            if !is_supported_extension(ext) {
+                set_file_error_status(
+                    &mut file_drag_drop,
+                    format!(
+                        "Unsupported file. Please drop {}",
+                        SUPPORTED_EXTENSIONS_HELP
+                    ),
                 );
-                file_drag_drop.status_kind = crate::io::FileStatusKind::Error;
                 return;
+            }
+            let contents = String::from_utf8_lossy(data);
+            match parse_structure_by_extension(ext, &contents) {
+                Ok(crystal) => set_file_loaded_status(&mut file_drag_drop, name, crystal),
+                Err(e) => {
+                    eprintln!("Failed to parse structure file: {}", e);
+                    set_file_error_status(&mut file_drag_drop, format!("Parse error: {e}"));
+                }
             }
 
             info!("loaded file: '{name}'");
@@ -442,4 +430,22 @@ fn web_event_observer(trigger: Trigger<WebEvent>, mut file_drag_drop: ResMut<Fil
             eprintln!("Failed to load catalog particle '{path}': {message}");
         }
     }
+}
+
+fn set_file_loaded_status(file_drag_drop: &mut FileDragDrop, name: &str, crystal: Crystal) {
+    let atom_count = crystal.atoms.len();
+    let file_bond_count = crystal.bonds.as_ref().map_or(0, Vec::len);
+    file_drag_drop.dragged_file = None;
+    file_drag_drop.loaded_crystal = Some(crystal);
+    file_drag_drop.status_message = if file_bond_count > 0 {
+        format!("Loaded: {name} ({atom_count} atoms, {file_bond_count} file bonds)")
+    } else {
+        format!("Loaded: {name} ({atom_count} atoms)")
+    };
+    file_drag_drop.status_kind = crate::io::FileStatusKind::Success;
+}
+
+fn set_file_error_status(file_drag_drop: &mut FileDragDrop, message: String) {
+    file_drag_drop.status_message = message;
+    file_drag_drop.status_kind = crate::io::FileStatusKind::Error;
 }

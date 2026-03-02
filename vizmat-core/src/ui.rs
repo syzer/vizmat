@@ -1,7 +1,6 @@
 #![allow(clippy::needless_pass_by_value)]
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
-#[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 
 use bevy::ecs::system::SystemParam;
@@ -13,20 +12,21 @@ use bevy::render::camera::Viewport;
 use bevy::render::view::RenderLayers;
 use bevy::ui::FocusPolicy;
 use bevy::ui::RelativeCursorPosition;
+use crossbeam_channel::{Receiver, Sender};
 #[cfg(target_arch = "wasm32")]
 use gloo::net::http::Request;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_futures::spawn_local;
 
 use crate::constants::{get_element_color, get_element_size, get_residue_class_color};
-#[cfg(not(target_arch = "wasm32"))]
+#[allow(unused_imports)]
 use crate::formats::parse_structure_by_extension;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::formats::SUPPORTED_EXTENSIONS;
 use crate::formats::SUPPORTED_EXTENSIONS_HELP;
 use crate::io::FileStatusKind;
 use crate::structure::{
-    resolve_bonds, AtomColorMode, AtomEntity, AtomIndex, BondEntity, BondInferenceSettings,
+    resolve_bonds, AtomColorMode, AtomEntity, AtomIndex, Bond, BondEntity, BondInferenceSettings,
     BondOrder, Crystal,
 };
 
@@ -135,7 +135,46 @@ pub(crate) struct HudHelpText;
 pub(crate) struct HudLegendText;
 
 #[derive(Component)]
-pub(crate) struct ParticleLoadingIndicator;
+pub(crate) struct ParticleLoadingOverlay;
+
+#[derive(Component)]
+pub(crate) struct ParticleLoadingTitle;
+
+#[derive(Component)]
+pub(crate) struct ParticleLoadingTelemetry;
+
+#[derive(Component)]
+pub(crate) struct ParticleLoadingProgressFill;
+
+#[derive(Debug)]
+pub(crate) struct CatalogLoadResult {
+    pub(crate) path: String,
+    pub(crate) source: String,
+    pub(crate) contents: Result<String, String>,
+}
+
+#[derive(Resource, Clone)]
+pub(crate) struct CatalogLoadChannel {
+    sender: Sender<CatalogLoadResult>,
+    receiver: Receiver<CatalogLoadResult>,
+}
+
+impl Default for CatalogLoadChannel {
+    fn default() -> Self {
+        let (sender, receiver) = crossbeam_channel::unbounded();
+        Self { sender, receiver }
+    }
+}
+
+impl CatalogLoadChannel {
+    pub(crate) fn send(&self, result: CatalogLoadResult) {
+        let _ = self.sender.send(result);
+    }
+
+    pub(crate) fn try_recv(&self) -> Option<CatalogLoadResult> {
+        self.receiver.try_recv().ok()
+    }
+}
 
 #[derive(Component)]
 pub(crate) struct BondToleranceSliderTrack;
@@ -525,7 +564,7 @@ fn compute_available_color_modes(
         modes.push(AtomColorMode::Residue);
     }
 
-    let (bonds, _) = resolve_bonds(crystal, bond_settings);
+    let bonds = bonds_for_color(crystal, bond_settings);
     if !bonds.is_empty() {
         let ring_atoms = compute_ring_atoms(crystal.atoms.len(), &bonds);
         let ring_count = ring_atoms.iter().filter(|&&v| v).count();
@@ -550,6 +589,20 @@ fn compute_available_color_modes(
     modes
 }
 
+fn bonds_for_color(crystal: &Crystal, bond_settings: &BondInferenceSettings) -> Vec<Bond> {
+    if bond_settings.enabled {
+        let (bonds, _) = resolve_bonds(crystal, bond_settings);
+        return bonds;
+    }
+
+    crystal
+        .bonds
+        .as_ref()
+        .filter(|b| !b.is_empty())
+        .cloned()
+        .unwrap_or_default()
+}
+
 pub(crate) fn update_atom_hover_cache(
     crystal: Option<Res<Crystal>>,
     bond_settings: Res<BondInferenceSettings>,
@@ -565,7 +618,7 @@ pub(crate) fn update_atom_hover_cache(
         return;
     }
 
-    let (bonds, _) = resolve_bonds(&crystal, &bond_settings);
+    let bonds = bonds_for_color(&crystal, &bond_settings);
     cache.degree = compute_atom_degree(crystal.atoms.len(), &bonds);
     cache.ring_atoms = compute_ring_atoms(crystal.atoms.len(), &bonds);
 }
@@ -720,6 +773,16 @@ type StartupThemeTextQueries<'w, 's> = (
     Query<'w, 's, &'static mut TextColor, With<StartupHelpText>>,
 );
 
+type ParticleLoadingTextQueries<'w, 's> = (
+    Query<'w, 's, &'static mut Text, With<ParticleLoadingTitle>>,
+    Query<'w, 's, &'static mut Text, With<ParticleLoadingTelemetry>>,
+);
+
+type ParticleLoadingNodeQueries<'w, 's> = (
+    Query<'w, 's, &'static mut Node, With<ParticleLoadingOverlay>>,
+    Query<'w, 's, &'static mut Node, With<ParticleLoadingProgressFill>>,
+);
+
 fn parse_embedded_particle_entries() -> Vec<String> {
     EMBEDDED_PARTICLE_LIST
         .lines()
@@ -747,7 +810,6 @@ fn filtered_particle_entries(state: &ParticlePickerState) -> Vec<String> {
         .collect()
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn particles_local_dir() -> &'static str {
     option_env!("VIZMAT_PARTICLES_LOCAL_DIR").unwrap_or(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -773,12 +835,10 @@ fn particle_local_asset_url(path: &str) -> String {
     format!("{}/{}", particles_asset_base_url(), path)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn particle_local_asset_path(path: &str) -> PathBuf {
     PathBuf::from(particles_local_dir()).join(path)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn set_catalog_loaded_status(path: &str, atom_count: usize, file_bond_count: usize) -> String {
     let name = path.rsplit('/').next().unwrap_or(path);
     if file_bond_count > 0 {
@@ -788,7 +848,6 @@ fn set_catalog_loaded_status(path: &str, atom_count: usize, file_bond_count: usi
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn parse_and_store_catalog_particle(
     path: &str,
     contents: &str,
@@ -1150,17 +1209,6 @@ pub(crate) fn setup_file_ui(mut commands: Commands, mut font_assets: ResMut<Asse
                     FileUploadText,
                     HiddenOnStartup,
                 ));
-                right.spawn((
-                    Text::new("Loading"),
-                    TextFont {
-                        font_size: 12.0,
-                        ..default()
-                    },
-                    Visibility::Hidden,
-                    TextColor(p.text_muted),
-                    HudHelpText,
-                    ParticleLoadingIndicator,
-                ));
 
                 right
                     .spawn((
@@ -1193,6 +1241,84 @@ pub(crate) fn setup_file_ui(mut commands: Commands, mut font_assets: ResMut<Asse
                         ));
                     });
             });
+        });
+
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(0.0),
+                left: Val::Px(0.0),
+                right: Val::Px(0.0),
+                bottom: Val::Px(0.0),
+                display: Display::None,
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            GlobalZIndex(20),
+            FocusPolicy::Pass,
+            BackgroundColor(Color::NONE),
+            ParticleLoadingOverlay,
+        ))
+        .with_children(|overlay| {
+            overlay
+                .spawn((
+                    Node {
+                        flex_direction: FlexDirection::Column,
+                        align_items: AlignItems::Center,
+                        row_gap: Val::Px(10.0),
+                        padding: UiRect::all(Val::Px(14.0)),
+                        border: UiRect::all(Val::Px(1.0)),
+                        ..default()
+                    },
+                    BorderColor(p.border),
+                    BackgroundColor(p.bar_bg_alt),
+                ))
+                .with_children(|panel| {
+                    panel.spawn((
+                        Text::new("Calibrating molecule..."),
+                        TextFont {
+                            font_size: 16.0,
+                            ..default()
+                        },
+                        TextColor(p.text),
+                        ParticleLoadingTitle,
+                    ));
+                    panel
+                        .spawn((
+                            Node {
+                                width: Val::Px(240.0),
+                                height: Val::Px(6.0),
+                                border: UiRect::all(Val::Px(1.0)),
+                                justify_content: JustifyContent::FlexStart,
+                                align_items: AlignItems::Stretch,
+                                ..default()
+                            },
+                            BorderColor(p.border),
+                            BackgroundColor(Color::srgba(0.5, 0.5, 0.5, 0.18)),
+                        ))
+                        .with_children(|track| {
+                            track.spawn((
+                                Node {
+                                    width: Val::Percent(35.0),
+                                    height: Val::Percent(100.0),
+                                    ..default()
+                                },
+                                BackgroundColor(p.slider_fill),
+                                ParticleLoadingProgressFill,
+                            ));
+                        });
+                    panel.spawn((
+                        Text::new("Fetching structure..."),
+                        TextFont {
+                            font_size: 12.0,
+                            ..default()
+                        },
+                        TextColor(p.text_muted),
+                        ParticleLoadingTelemetry,
+                    ));
+                });
         });
 
     commands
@@ -1375,22 +1501,68 @@ pub(crate) fn update_file_ui(
     }
 }
 
-pub(crate) fn update_particle_loading_indicator(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn update_particle_loading_overlay(
     file_drag_drop: Res<crate::io::FileDragDrop>,
     time: Res<Time>,
-    mut indicator_query: Query<(&mut Text, &mut Visibility), With<ParticleLoadingIndicator>>,
+    _theme: Res<UiTheme>,
+    mut node_queries: ParamSet<ParticleLoadingNodeQueries<'_, '_>>,
+    mut text_queries: ParamSet<ParticleLoadingTextQueries<'_, '_>>,
 ) {
-    let Ok((mut text, mut visibility)) = indicator_query.single_mut() else {
+    let status = file_drag_drop.status_message.as_str();
+    let is_visible = status.starts_with("Loading:");
+    let mut overlay_query = node_queries.p0();
+    let Ok(mut overlay) = overlay_query.single_mut() else {
         return;
     };
-    let is_loading = file_drag_drop.status_message.starts_with("Loading:");
-    if is_loading {
-        const FRAMES: [&str; 8] = ["-", "\\", "|", "/", "-", "\\", "|", "/"];
-        let frame = ((time.elapsed_secs() * 10.0) as usize) % FRAMES.len();
-        text.0 = format!("Loading {}", FRAMES[frame]);
-        *visibility = Visibility::Visible;
+    overlay.display = if is_visible {
+        Display::Flex
     } else {
-        *visibility = Visibility::Hidden;
+        Display::None
+    };
+    if !is_visible {
+        return;
+    }
+
+    for mut text in &mut text_queries.p0() {
+        text.0 = "Calibrating molecule...".to_string();
+    }
+    for mut text in &mut text_queries.p1() {
+        text.0 = "Fetching structure...".to_string();
+    }
+    let mut fill_query = node_queries.p1();
+    if let Ok(mut fill) = fill_query.single_mut() {
+        let phase = (time.elapsed_secs() * 1.4).sin() * 0.5 + 0.5;
+        let width = 25.0 + phase * 55.0;
+        fill.width = Val::Percent(width);
+    }
+}
+
+pub(crate) fn handle_catalog_load_results(
+    mut file_drag_drop: ResMut<crate::io::FileDragDrop>,
+    catalog_channel: Option<Res<CatalogLoadChannel>>,
+) {
+    let Some(channel) = catalog_channel else {
+        return;
+    };
+    while let Some(result) = channel.try_recv() {
+        match result.contents {
+            Ok(contents) => {
+                if parse_and_store_catalog_particle(
+                    &result.path,
+                    &contents,
+                    &result.source,
+                    &mut file_drag_drop,
+                ) {
+                    file_drag_drop.dragged_file = None;
+                }
+            }
+            Err(err) => {
+                let name = result.path.rsplit('/').next().unwrap_or(&result.path);
+                file_drag_drop.status_message = format!("Load error ({name}): {err}");
+                file_drag_drop.status_kind = FileStatusKind::Error;
+            }
+        }
     }
 }
 
@@ -1766,19 +1938,18 @@ pub fn clear_old_atoms(mut commands: Commands, atom_query: Query<Entity, With<At
     }
 }
 
-fn load_particle_from_catalog_path(path: &str, file_drag_drop: &mut crate::io::FileDragDrop) {
+fn load_particle_from_catalog_path(
+    path: &str,
+    file_drag_drop: &mut crate::io::FileDragDrop,
+    catalog_channel: Option<&CatalogLoadChannel>,
+) {
     let name = path.rsplit('/').next().unwrap_or(path);
-    info!("Particle picker: requested load for '{path}'");
     file_drag_drop.status_message = format!("Loading: {name}");
     file_drag_drop.status_kind = FileStatusKind::Info;
 
     #[cfg(not(target_arch = "wasm32"))]
     {
         let local_path = particle_local_asset_path(path);
-        info!(
-            "Particle picker: reading local file '{}'",
-            local_path.display()
-        );
         match std::fs::read_to_string(&local_path) {
             Ok(contents) => {
                 if parse_and_store_catalog_particle(path, &contents, "local disk", file_drag_drop) {
@@ -1790,52 +1961,35 @@ fn load_particle_from_catalog_path(path: &str, file_drag_drop: &mut crate::io::F
                     "Particle picker: read error for '{path}' at '{}': {err}",
                     local_path.display()
                 );
+                let Some(channel) = catalog_channel else {
+                    file_drag_drop.status_message =
+                        format!("Read error: {err}. Remote fallback unavailable.");
+                    file_drag_drop.status_kind = FileStatusKind::Error;
+                    return;
+                };
+                let path_owned = path.to_string();
                 let remote_url = particle_remote_url(path);
-                info!(
-                    "Particle picker: trying desktop remote fallback URL '{}'",
-                    remote_url
-                );
-                match reqwest::blocking::get(&remote_url) {
-                    Ok(response) => {
-                        if response.status().is_success() {
-                            match response.text() {
-                                Ok(contents) => {
-                                    if parse_and_store_catalog_particle(
-                                        path,
-                                        &contents,
-                                        "remote fallback",
-                                        file_drag_drop,
-                                    ) {
-                                        file_drag_drop.dragged_file = None;
-                                    }
-                                }
-                                Err(remote_err) => {
-                                    warn!(
-                                        "Particle picker: failed to read remote response body for '{path}': {remote_err}"
-                                    );
-                                    file_drag_drop.status_message =
-                                        format!("Load error ({name}): {remote_err}");
-                                    file_drag_drop.status_kind = FileStatusKind::Error;
-                                }
+                let sender = channel.clone();
+                std::thread::spawn(move || {
+                    let result = match reqwest::blocking::get(&remote_url) {
+                        Ok(response) => {
+                            if response.status().is_success() {
+                                response.text().map_err(|e| format!("Read error: {e}"))
+                            } else {
+                                Err(format!(
+                                    "HTTP {} while loading remote particle",
+                                    response.status()
+                                ))
                             }
-                        } else {
-                            let status = response.status();
-                            warn!(
-                                "Particle picker: remote fallback failed for '{path}' with status {status}"
-                            );
-                            file_drag_drop.status_message = format!(
-                                "Read error: {err}. Missing local file and remote HTTP {status}"
-                            );
-                            file_drag_drop.status_kind = FileStatusKind::Error;
                         }
-                    }
-                    Err(remote_err) => {
-                        warn!("Particle picker: remote fallback request failed for '{path}': {remote_err}");
-                        file_drag_drop.status_message =
-                            format!("Read error: {err}. Remote fallback failed: {remote_err}");
-                        file_drag_drop.status_kind = FileStatusKind::Error;
-                    }
-                }
+                        Err(remote_err) => Err(format!("Network error: {remote_err}")),
+                    };
+                    sender.send(CatalogLoadResult {
+                        path: path_owned,
+                        source: "remote fallback".to_string(),
+                        contents: result,
+                    });
+                });
             }
         }
     }
@@ -1843,11 +1997,9 @@ fn load_particle_from_catalog_path(path: &str, file_drag_drop: &mut crate::io::F
     #[cfg(target_arch = "wasm32")]
     {
         let path_owned = path.to_string();
-        info!("Particle picker: starting web fetch for '{path_owned}'");
         spawn_local(async move {
             let local_url = particle_local_asset_url(&path_owned);
             let remote_url = particle_remote_url(&path_owned);
-            info!("Particle picker: trying web local URL '{}'", local_url);
 
             async fn fetch_text(url: String) -> anyhow::Result<String> {
                 let resp = Request::get(&url).send().await?;
@@ -1862,20 +2014,16 @@ fn load_particle_from_catalog_path(path: &str, file_drag_drop: &mut crate::io::F
                 Ok(text) => Ok(text),
                 Err(err) => {
                     warn!("Particle picker: local URL failed, trying remote fallback: {err}");
-                    info!("Particle picker: trying web remote URL '{}'", remote_url);
                     fetch_text(remote_url).await
                 }
             };
 
             match result {
-                Ok(text) => {
-                    info!("Particle picker: web fetch completed for '{path_owned}'");
-                    crate::send_event(crate::WebEvent::Drop {
-                        name: path_owned,
-                        data: text.into_bytes(),
-                        mime_type: "text/plain".to_string(),
-                    })
-                }
+                Ok(text) => crate::send_event(crate::WebEvent::Drop {
+                    name: path_owned,
+                    data: text.into_bytes(),
+                    mime_type: "text/plain".to_string(),
+                }),
                 Err(err) => {
                     warn!("Particle picker: web fetch failed for '{path_owned}': {err}");
                     crate::send_event(crate::WebEvent::CatalogLoadError {
@@ -1920,6 +2068,7 @@ pub(crate) fn particle_picker_keyboard_search(
     mut keyboard_events: EventReader<KeyboardInput>,
     mut picker: ResMut<ParticlePickerState>,
     mut file_drag_drop: ResMut<crate::io::FileDragDrop>,
+    catalog_channel: Option<Res<CatalogLoadChannel>>,
 ) {
     if !picker.visible {
         return;
@@ -1939,8 +2088,11 @@ pub(crate) fn particle_picker_keyboard_search(
             }
             Key::Enter => {
                 if let Some(first) = filtered_particle_entries(&picker).first().cloned() {
-                    info!("Particle picker: Enter pressed, loading first match '{first}'");
-                    load_particle_from_catalog_path(&first, &mut file_drag_drop);
+                    load_particle_from_catalog_path(
+                        &first,
+                        &mut file_drag_drop,
+                        catalog_channel.as_deref(),
+                    );
                     picker.visible = false;
                 }
             }
@@ -2048,17 +2200,18 @@ pub(crate) fn particle_picker_result_buttons(
     >,
     mut picker: ResMut<ParticlePickerState>,
     mut file_drag_drop: ResMut<crate::io::FileDragDrop>,
+    catalog_channel: Option<Res<CatalogLoadChannel>>,
     theme: Res<UiTheme>,
 ) {
     for (interaction, selected, mut background) in &mut interaction_query {
         match *interaction {
             Interaction::Pressed => {
                 *background = BackgroundColor(themed_button_bg(theme.mode, Interaction::Pressed));
-                info!(
-                    "Particle picker: button pressed for '{}'",
-                    selected.path.as_str()
+                load_particle_from_catalog_path(
+                    &selected.path,
+                    &mut file_drag_drop,
+                    catalog_channel.as_deref(),
                 );
-                load_particle_from_catalog_path(&selected.path, &mut file_drag_drop);
                 picker.visible = false;
             }
             Interaction::Hovered => {
@@ -2273,15 +2426,16 @@ fn spawn_atoms(
 
     // Create materials for different elements
     let mut element_materials: HashMap<String, Handle<StandardMaterial>> = HashMap::new();
-    let (bonds, _source) = resolve_bonds(crystal, bond_settings);
-    let ring_atoms = compute_ring_atoms(crystal.atoms.len(), &bonds);
-    let bond_env_atoms = compute_bond_env_atoms(crystal.atoms.len(), &bonds);
+    let (render_bonds, _source) = resolve_bonds(crystal, bond_settings);
+    let color_bonds = bonds_for_color(crystal, bond_settings);
+    let ring_atoms = compute_ring_atoms(crystal.atoms.len(), &color_bonds);
+    let bond_env_atoms = compute_bond_env_atoms(crystal.atoms.len(), &color_bonds);
     let functional_groups =
-        compute_functional_groups(crystal, &bonds, &ring_atoms, &bond_env_atoms);
+        compute_functional_groups(crystal, &color_bonds, &ring_atoms, &bond_env_atoms);
     let mut bond_materials: HashMap<u8, Handle<StandardMaterial>> = HashMap::new();
 
     commands.entity(root_entity).with_children(|parent| {
-        for bond in &bonds {
+        for bond in &render_bonds {
             let a = &crystal.atoms[bond.a];
             let b = &crystal.atoms[bond.b];
             let pa = Vec3::new(a.x, a.y, a.z);
@@ -3214,5 +3368,25 @@ mod tests {
         assert!(msg.contains("Could not read particle source"));
         let msg = status_message_for_hud("Parse error: bad token", FileStatusKind::Error);
         assert!(msg.contains("Could not parse"));
+    }
+
+    #[test]
+    fn particle_loading_overlay_system_runs_without_query_conflicts() {
+        let mut app = App::new();
+        app.init_resource::<Time>();
+        app.insert_resource(UiTheme {
+            mode: ThemeMode::Dark,
+        });
+        app.insert_resource(crate::io::FileDragDrop::default());
+
+        app.world_mut()
+            .spawn((ParticleLoadingOverlay, Node::default()));
+        app.world_mut().spawn((ParticleLoadingTitle, Text::new("")));
+        app.world_mut()
+            .spawn((ParticleLoadingTelemetry, Text::new("")));
+        app.world_mut()
+            .spawn((ParticleLoadingProgressFill, Node::default()));
+        app.add_systems(Update, update_particle_loading_overlay);
+        app.update();
     }
 }
