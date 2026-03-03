@@ -85,6 +85,23 @@ pub enum BondSourceMode {
     Inferred,
 }
 
+#[derive(Resource, Clone)]
+pub struct BondCache {
+    pub bonds: Vec<Bond>,
+    pub source: BondSourceMode,
+    pub valid: bool,
+}
+
+impl Default for BondCache {
+    fn default() -> Self {
+        Self {
+            bonds: Vec::new(),
+            source: BondSourceMode::Disabled,
+            valid: false,
+        }
+    }
+}
+
 // Event to update the structure with new atom positions
 #[derive(Event, Clone)]
 pub struct UpdateStructure {
@@ -182,4 +199,75 @@ pub fn resolve_bonds(
         infer_bonds_grid(crystal, settings.tolerance_scale),
         BondSourceMode::Inferred,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::time::{Duration, Instant};
+
+    use crate::formats::parse_structure_by_extension;
+    use crate::structure::{BondCache, BondInferenceSettings, BondSourceMode, Crystal};
+
+    fn asset_file(path: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../vizmat-app/assets/structures")
+            .join(path)
+    }
+
+    fn load_structure(path: &str) -> Crystal {
+        let full_path = asset_file(path);
+        let ext = full_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or_default();
+        let contents =
+            std::fs::read_to_string(&full_path).expect("expected structure asset to be readable");
+        parse_structure_by_extension(ext, &contents).expect("expected structure parse success")
+    }
+
+    fn cached_bond_stats(crystal: &Crystal, loops: usize) -> (usize, usize, Duration, Duration) {
+        let settings = BondInferenceSettings::default();
+        let mut cache = BondCache::default();
+
+        let first_start = Instant::now();
+        let (first_bonds, source) = crate::structure::resolve_bonds(crystal, &settings);
+        cache.bonds = first_bonds;
+        cache.source = source;
+        cache.valid = true;
+        let first_elapsed = first_start.elapsed();
+        assert_eq!(cache.source, BondSourceMode::Inferred);
+        let inferred_count = cache.bonds.len();
+
+        let loop_start = Instant::now();
+        for _ in 0..loops {
+            std::hint::black_box(cache.bonds.len());
+        }
+        let loop_elapsed = loop_start.elapsed();
+
+        (
+            crystal.atoms.len(),
+            inferred_count,
+            first_elapsed,
+            loop_elapsed,
+        )
+    }
+
+    #[test]
+    fn inferred_bonds_cached_6vxx() {
+        let crystal = load_structure("proteins/6VXX.pdb");
+        let cached_loops = 200_000;
+
+        let (atom_count, bond_count, first_cached_elapsed, cached_elapsed) =
+            cached_bond_stats(&crystal, cached_loops);
+        let avg_cached = cached_elapsed.as_secs_f64() / cached_loops as f64;
+
+        eprintln!(
+            "BOND_BENCH_CACHE_6VXX: atoms={atom_count} bonds={bond_count} first_cached={:.3}s cached_{}x={:.3}s avg_cached={:.9}s",
+            first_cached_elapsed.as_secs_f64(),
+            cached_loops,
+            cached_elapsed.as_secs_f64(),
+            avg_cached,
+        );
+    }
 }
