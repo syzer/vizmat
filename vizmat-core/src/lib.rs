@@ -18,8 +18,8 @@ pub(crate) mod ui;
 
 pub(crate) mod client;
 pub(crate) mod constants;
-pub(crate) mod formats;
-pub(crate) mod structure;
+pub mod formats;
+pub mod structure;
 
 use crate::client::{poll_websocket_stream, setup_websocket_stream};
 use crate::formats::{

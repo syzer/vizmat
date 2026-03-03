@@ -59,7 +59,7 @@ watch:
     cargo watch -x "run"
 
 benchmark:
-    cargo test -p vizmat-core inferred_bonds_cached_6vxx --release -- --ignored --nocapture --test-threads=1
+    cargo bench -p vizmat-core --bench bond_cache
 
 wasm:
     rustup target add wasm32-unknown-unknown --toolchain nightly-aarch64-apple-darwin
