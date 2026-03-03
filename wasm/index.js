@@ -1,4 +1,4 @@
-import init from "./vizmat_core.js";
+import init, { start } from "./vizmat_core.js";
 
 (async () => {
   const loader = document.getElementById("app-loader");
@@ -20,6 +20,7 @@ import init from "./vizmat_core.js";
   // Initialize WASM module
   try {
     await init(); // This waits for WASM to load
+    start(); // start app
     hideLoader();
   } catch (e) {
     console.error("Failed to initialize WASM module:", e);

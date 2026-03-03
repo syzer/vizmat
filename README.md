@@ -121,8 +121,24 @@ PDB (Residue + Selected Atom Legend):
 * [x] Initial Bevy setup
 * [x] Basic crystal visualization (desktop)
 * [x] Browser support via WASM
-* [ ] Extend with interactivity and file parsing
+* [x] Extend with interactivity and file parsing
 * [x] Build community contributions
+- [x] Windows support
+- [x] CI/CD to compile and publish the binary for different archs.
+- [x] coordinator system
+- [x] use mouse to control
+- [x] the atom info box color contrast not obvious in light mode
+- [ ] add button to toggle projection.
+- [ ] the radii of atom hover is too small when zoomed in.
+- [ ] atom info and atom selected when atom overlap, use the distance to camera not to the cursor (?).
+- [ ] second click on selected atom will unselect it.
+- [ ] flex of buttons in hud.
+- [ ] bonds has half-half color of connected atoms.
+- [x] open file not work in wasm
+- [x] add github badge in wasm app for star
+- [x] load default become a dropdown to get files from gallary (c6h6 and water in the repo). 
+- [ ] load default -> load example and should still work after there is loaded structure.
+- [ ] showing one molecule, one protein and one crystal in the first page before user's structure load.
 
 ## Contributing
 
