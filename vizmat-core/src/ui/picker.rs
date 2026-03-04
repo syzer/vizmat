@@ -26,6 +26,9 @@ pub(crate) struct StructurePickerQueryText;
 pub(crate) struct StructurePickerQueryIcon;
 
 #[derive(Component)]
+pub(crate) struct StructurePickerQueryBar;
+
+#[derive(Component)]
 pub(crate) struct StructurePickerQueryCaret;
 
 #[derive(Component)]
@@ -74,6 +77,19 @@ const SCROLLBAR_WIDTH: f32 = 8.0;
 const SCROLLBAR_TRACK_GAP: f32 = 4.0;
 const MIN_SCROLLBAR_THUMB_PX: f32 = 18.0;
 
+fn picker_scrollbar_colors(mode: ThemeMode) -> (Color, Color) {
+    match mode {
+        ThemeMode::Dark => (
+            Color::srgba(0.26, 0.30, 0.36, 0.52),
+            Color::srgba(0.60, 0.66, 0.74, 0.88),
+        ),
+        ThemeMode::Light => (
+            Color::srgba(0.72, 0.76, 0.82, 0.52),
+            Color::srgba(0.34, 0.39, 0.50, 0.88),
+        ),
+    }
+}
+
 pub(crate) fn set_structure_picker_keyboard_active(visible: bool) {
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -109,16 +125,7 @@ pub(crate) fn setup_structure_picker_panel(
     icon_font: &Handle<Font>,
 ) {
     let palette = super::theme_palette(theme.mode);
-    let (scrollbar_track_bg, scrollbar_thumb_bg) = match theme.mode {
-        ThemeMode::Dark => (
-            Color::srgba(0.26, 0.30, 0.36, 0.52),
-            Color::srgba(0.60, 0.66, 0.74, 0.88),
-        ),
-        ThemeMode::Light => (
-            Color::srgba(0.72, 0.76, 0.82, 0.52),
-            Color::srgba(0.34, 0.39, 0.50, 0.88),
-        ),
-    };
+    let (scrollbar_track_bg, scrollbar_thumb_bg) = picker_scrollbar_colors(theme.mode);
     commands
         .spawn((
             Node {
@@ -154,6 +161,7 @@ pub(crate) fn setup_structure_picker_panel(
                     },
                     BorderColor(palette.border),
                     BackgroundColor(palette.bar_bg),
+                    StructurePickerQueryBar,
                 ))
                 .with_children(|row| {
                     row.spawn((Node {
@@ -372,6 +380,14 @@ pub(crate) fn refresh_structure_picker_panel(
     mut commands: Commands,
     picker: Res<StructurePickerState>,
     mut panel_query: Query<&mut Node, With<StructurePickerPanel>>,
+    mut panel_style_query: Query<
+        (&mut BackgroundColor, &mut BorderColor),
+        (With<StructurePickerPanel>, Without<StructurePickerQueryBar>),
+    >,
+    mut query_bar_style: Query<
+        (&mut BackgroundColor, &mut BorderColor),
+        (With<StructurePickerQueryBar>, Without<StructurePickerPanel>),
+    >,
     mut query_text: Query<
         (&mut Text, &mut TextColor),
         (
@@ -420,6 +436,15 @@ pub(crate) fn refresh_structure_picker_panel(
     }
 
     let palette = super::theme_palette(theme.mode);
+
+    for (mut panel_bg, mut panel_border) in &mut panel_style_query {
+        panel_bg.0 = palette.bar_bg_alt;
+        panel_border.0 = palette.border;
+    }
+    for (mut query_bar_bg, mut query_bar_border) in &mut query_bar_style {
+        query_bar_bg.0 = palette.bar_bg;
+        query_bar_border.0 = palette.border;
+    }
     if let Ok((mut text, mut text_color)) = query_text.single_mut() {
         if picker.query.is_empty() {
             text.0 = "Search structures...".to_string();
@@ -514,12 +539,34 @@ pub(crate) fn blink_structure_picker_query_caret(
     };
 }
 
+#[allow(clippy::type_complexity)]
 pub(crate) fn update_structure_picker_scroll_indicator(
     layout_query: Query<&Children, With<StructurePickerResultsLayout>>,
-    mut thumb_query: Query<(&mut Node, &mut Visibility), With<StructurePickerScrollbarThumb>>,
+    mut thumb_query: Query<
+        (&mut Node, &mut Visibility, &mut BackgroundColor),
+        (
+            With<StructurePickerScrollbarThumb>,
+            Without<StructurePickerScrollbarTrack>,
+        ),
+    >,
     scroll_query: Query<(&ScrollPosition, &ComputedNode), With<StructurePickerResultsRoot>>,
-    track_query: Query<(&Children, &ComputedNode), With<StructurePickerScrollbarTrack>>,
+    mut track_query: Query<
+        (&Children, &ComputedNode, &mut BackgroundColor),
+        (
+            With<StructurePickerScrollbarTrack>,
+            Without<StructurePickerScrollbarThumb>,
+        ),
+    >,
+    theme: Res<UiTheme>,
 ) {
+    let (track_color, thumb_color) = picker_scrollbar_colors(theme.mode);
+    for mut thumb_bg in thumb_query.iter_mut().map(|(_, _, bg)| bg) {
+        thumb_bg.0 = thumb_color;
+    }
+    for (_, _, mut track_bg) in &mut track_query {
+        track_bg.0 = track_color;
+    }
+
     let Ok(layout_children) = layout_query.single() else {
         return;
     };
@@ -544,7 +591,7 @@ pub(crate) fn update_structure_picker_scroll_indicator(
         Ok(value) => value,
         Err(_) => return,
     };
-    let (track_children, track_computed) = match track_query.get(track_root) {
+    let (track_children, track_computed, _) = match track_query.get(track_root) {
         Ok(value) => value,
         Err(_) => return,
     };
@@ -560,7 +607,7 @@ pub(crate) fn update_structure_picker_scroll_indicator(
         return;
     };
 
-    let Ok((mut thumb_node, mut visibility)) = thumb_query.get_mut(thumb_entity) else {
+    let Ok((mut thumb_node, mut visibility, _)) = thumb_query.get_mut(thumb_entity) else {
         return;
     };
 
