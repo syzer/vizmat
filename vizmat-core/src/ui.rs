@@ -18,6 +18,7 @@ use {
     crate::{get_web_theme, set_web_theme},
     gloo::net::http::Request,
     wasm_bindgen_futures::spawn_local,
+    web_sys::window,
 };
 
 use crate::constants::{get_element_color, get_element_size, get_residue_class_color};
@@ -1186,6 +1187,27 @@ pub(crate) fn setup_file_ui(mut commands: Commands, mut font_assets: ResMut<Asse
         visible: false,
     });
     let p = theme_palette(theme.mode);
+    let is_mobile = {
+        #[cfg(target_arch = "wasm32")]
+        let is_mobile = window()
+            .and_then(|window| window.navigator().user_agent().ok())
+            .is_some_and(|ua| {
+                let ua = ua.to_lowercase();
+                ua.contains("mobile") || ua.contains("android") || ua.contains("iphone")
+            });
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let is_mobile = false;
+
+        is_mobile
+    };
+
+    let controls_hint = if is_mobile {
+        "Touch: one-finger: rotate, two-finger: pan, pinch: zoom"
+    } else {
+        "Doom-like: W/A/S/D move  Shift sprint  Q/E rotate  LMB rotate  RMB pan  Wheel zoom"
+    };
+
     let icon_font: Handle<Font> = font_assets.add(
         Font::try_from_bytes(
             include_bytes!(concat!(
@@ -1601,9 +1623,7 @@ pub(crate) fn setup_file_ui(mut commands: Commands, mut font_assets: ResMut<Asse
         ))
         .with_children(|bar| {
             bar.spawn((
-                Text::new(
-                    "Doom-like: W/A/S/D move  Shift sprint  Q/E rotate  LMB rotate  RMB pan  Wheel zoom",
-                ),
+                Text::new(controls_hint),
                 TextFont {
                     font_size: 11.0,
                     ..default()
@@ -2094,6 +2114,13 @@ pub(crate) struct CameraRig {
     initial_translation: Vec3,
     initial_rotation: Quat,
     initial_scale: Vec3,
+}
+
+#[derive(Resource, Default)]
+pub(crate) struct TouchGestureState {
+    pub(crate) rotate: Vec2,
+    pub(crate) pan: Vec2,
+    pub(crate) zoom: f32,
 }
 
 fn crystal_center_and_extents(crystal: &Crystal) -> Option<(Vec3, Vec3)> {
@@ -3234,16 +3261,25 @@ pub(crate) fn camera_controls(
     time: Res<Time>,
     mut mouse_motion_events: EventReader<MouseMotion>,
     mut mouse_wheel_events: EventReader<MouseWheel>,
+    mut touch_gestures: ResMut<TouchGestureState>,
     mut camera_rig: ResMut<CameraRig>,
     ui_interactions: Query<&Interaction, With<Button>>,
 ) {
     if let Ok(mut transform) = camera_query.single_mut() {
         let mut zoom_change = 0.0;
         let mut pan_request = Vec2::ZERO;
+        let mut rotate_request = Vec2::ZERO;
+        let touch_rotate = touch_gestures.rotate;
+        let touch_pan = touch_gestures.pan;
+        let touch_zoom = touch_gestures.zoom;
+        touch_gestures.rotate = Vec2::ZERO;
+        touch_gestures.pan = Vec2::ZERO;
+        touch_gestures.zoom = 0.0;
         let ui_active = ui_interactions.iter().any(|i| *i != Interaction::None);
 
         const MIN_DISTANCE: f32 = 0.2;
         const MAX_DISTANCE: f32 = 200.0;
+        const TOUCH_ZOOM_SCALE: f32 = -1.0;
 
         let mut mouse_delta = Vec2::ZERO;
         for motion in mouse_motion_events.read() {
@@ -3251,9 +3287,16 @@ pub(crate) fn camera_controls(
         }
 
         if !ui_active && mouse_buttons.pressed(MouseButton::Left) {
+            rotate_request += mouse_delta;
+        }
+        if !ui_active && touch_rotate != Vec2::ZERO {
+            rotate_request += touch_rotate;
+        }
+
+        if !ui_active && rotate_request != Vec2::ZERO {
             let sensitivity = 0.005;
-            let yaw_delta = -mouse_delta.x * sensitivity;
-            let pitch_delta = -mouse_delta.y * sensitivity;
+            let yaw_delta = -rotate_request.x * sensitivity;
+            let pitch_delta = -rotate_request.y * sensitivity;
             let yaw_rotation = Quat::from_rotation_y(yaw_delta);
             let right_axis = transform.right().normalize_or_zero();
             let pitch_rotation = if right_axis.length_squared() > 0.0 {
@@ -3291,11 +3334,17 @@ pub(crate) fn camera_controls(
         if !ui_active && mouse_buttons.pressed(MouseButton::Right) {
             pan_request = mouse_delta;
         }
+        if !ui_active && touch_pan != Vec2::ZERO {
+            pan_request += touch_pan;
+        }
 
         if !ui_active {
             for wheel in mouse_wheel_events.read() {
                 zoom_change -= wheel.y * 0.002;
             }
+        }
+        if !ui_active && touch_zoom != 0.0 {
+            zoom_change += touch_zoom * TOUCH_ZOOM_SCALE;
         }
 
         // Keep camera offset updated relative to target.

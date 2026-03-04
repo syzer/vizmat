@@ -3,6 +3,7 @@ use std::sync::OnceLock;
 use bevy::log::{Level, LogPlugin};
 use bevy::prelude::*;
 use crossbeam_channel::Sender;
+use serde::de::{self, Deserializer};
 
 #[cfg(target_arch = "wasm32")]
 use {
@@ -42,7 +43,7 @@ use crate::ui::{
     transition_to_running_on_structure_loaded, update_atom_hover_cache, update_atom_hover_label,
     update_bond_order_legend, update_color_mode_availability, update_file_ui,
     update_gizmo_viewport, update_scene, update_selected_atom_from_click,
-    update_structure_loading_overlay, AppUiState, CatalogLoadChannel,
+    update_structure_loading_overlay, AppUiState, CatalogLoadChannel, TouchGestureState,
 };
 use crate::ui::{setup_buttons, spawn_axis};
 
@@ -82,6 +83,54 @@ pub enum WebEvent {
         path: String,
         message: String,
     },
+    TouchGesture {
+        kind: TouchGestureKind,
+        dx: f32,
+        dy: f32,
+        scale_delta: f32,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum TouchGestureKind {
+    Rotate,
+    TwoFinger,
+}
+
+impl<'de> serde::Deserialize<'de> for TouchGestureKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = <String as serde::Deserialize>::deserialize(deserializer)?;
+        let normalized = raw.trim().to_ascii_lowercase().replace(['_', '-'], "");
+
+        match normalized.as_str() {
+            "rotate" => Ok(Self::Rotate),
+            "twofinger" => Ok(Self::TwoFinger),
+            _ => Err(de::Error::unknown_variant(
+                &raw,
+                &[
+                    "Rotate",
+                    "rotate",
+                    "TwoFinger",
+                    "two_finger",
+                    "Two_Finger",
+                    "two-finger",
+                ],
+            )),
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct TouchGesturePayload {
+    gesture: TouchGestureKind,
+    dx: f32,
+    dy: f32,
+    scale_delta: f32,
 }
 
 pub struct WebPlugin {
@@ -124,6 +173,7 @@ impl Plugin for WebPlugin {
             let sender = ChannelSender::<WebEvent>(sender);
             set_sender(sender);
             register_drop(&self.dom_drop_element_id).unwrap();
+            register_touch_gesture_listener().unwrap();
         }
     }
 }
@@ -289,6 +339,45 @@ pub fn register_drop(id: &str) -> Option<()> {
     Some(())
 }
 
+#[cfg(target_arch = "wasm32")]
+fn register_touch_gesture_listener() -> Option<()> {
+    let document = gloo::utils::document();
+    let window = document.default_view()?;
+
+    EventListener::new_with_options(
+        &window,
+        "vizmat-touch-gesture",
+        EventListenerOptions::enable_prevent_default(),
+        move |event| {
+            let event: CustomEvent = match event.clone().dyn_into() {
+                Ok(event) => event,
+                Err(err) => {
+                    warn!("Ignoring invalid touch-gesture event: {err:?}");
+                    return;
+                }
+            };
+
+            let payload: TouchGesturePayload = match event.detail().into_serde() {
+                Ok(payload) => payload,
+                Err(err) => {
+                    warn!("Ignoring touch-gesture payload parse failure: {err}");
+                    return;
+                }
+            };
+
+            send_event(WebEvent::TouchGesture {
+                kind: payload.gesture,
+                dx: payload.dx,
+                dy: payload.dy,
+                scale_delta: payload.scale_delta,
+            });
+        },
+    )
+    .forget();
+
+    Some(())
+}
+
 /// Shared function for Bevy app setup
 pub fn run_app() {
     App::new()
@@ -309,6 +398,7 @@ pub fn run_app() {
         })
         .init_resource::<FileDragDrop>()
         .init_resource::<CatalogLoadChannel>()
+        .init_resource::<TouchGestureState>()
         .init_resource::<AtomColorMode>()
         .init_resource::<BondInferenceSettings>()
         .init_resource::<BondCache>()
@@ -444,6 +534,7 @@ fn web_event_observer(
     mut file_drag_drop: ResMut<FileDragDrop>,
     mut next_ui_state: ResMut<NextState<AppUiState>>,
     mut commands: Commands,
+    mut touch_gesture_state: ResMut<TouchGestureState>,
 ) {
     match trigger.event() {
         WebEvent::Drop {
@@ -486,6 +577,20 @@ fn web_event_observer(
             file_drag_drop.status_kind = crate::io::FileStatusKind::Error;
             eprintln!("Failed to load catalog structure '{path}': {message}");
         }
+        WebEvent::TouchGesture {
+            kind,
+            dx,
+            dy,
+            scale_delta,
+        } => match kind {
+            TouchGestureKind::Rotate => {
+                touch_gesture_state.rotate += Vec2::new(*dx, *dy);
+            }
+            TouchGestureKind::TwoFinger => {
+                touch_gesture_state.pan += Vec2::new(*dx, *dy);
+                touch_gesture_state.zoom += *scale_delta;
+            }
+        },
     }
 }
 
