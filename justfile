@@ -58,7 +58,7 @@ protein-3j3a:
 watch:
     cargo watch -x "run"
 
-benchmark:
+bench:
     cargo bench -p vizmat-core --bench bond_cache
 
 wasm:

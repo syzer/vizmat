@@ -85,6 +85,10 @@ dev-track-location = ["bevy/track_location"]
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 
+[[bench]]
+name = "bond_cache"
+harness = false
+
 [lib]
 # need both, cdylib for wasm, rlib for main.rs
 crate-type = ["cdylib", "rlib"]
