@@ -47,6 +47,11 @@ html[data-theme="light"] {
 html, body {
   width: 100%;
   height: 100%;
+  touch-action: none;
+  overscroll-behavior: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 body {
   margin: 0;
@@ -70,6 +75,7 @@ body {
   color: var(--accent);
 }
 header {
+  touch-action: none;
   position: fixed;
   top: 10px;
   right: 10px;
@@ -97,6 +103,7 @@ header a img {
   height: 20px;
 }
 .hint {
+  touch-action: none;
   position: fixed;
   left: 12px;
   bottom: 12px;
@@ -124,6 +131,11 @@ canvas {
   height: 100%;
   display: block;
   background: transparent;
+  touch-action: none;
+  overscroll-behavior: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 .canvas-shell {
   position: fixed;
@@ -137,6 +149,10 @@ canvas {
   border: 1px solid var(--line);
   box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
   background: var(--canvas-bg);
+  touch-action: none;
+  overscroll-behavior: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
 .loader {
   position: fixed;
