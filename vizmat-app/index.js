@@ -5,6 +5,43 @@
   const pickerInput = document.getElementById("picker-keyboard-input");
   if (!loader) return;
 
+  const viewportState = {
+    width: window.innerWidth,
+    height: window.innerHeight,
+  };
+  let pickerOpen = false;
+
+  const applyViewportSizing = () => {
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    const shouldUpdate =
+      !pickerOpen || height >= viewportState.height || width !== viewportState.width;
+
+    if (shouldUpdate) {
+      viewportState.width = width;
+      viewportState.height = height;
+
+      const root = document.documentElement;
+      const desktopCanvasHeight = Math.min(height * 0.8, 900);
+      const mobileCanvasHeight = Math.min(height * 0.82, 900);
+
+      root.style.setProperty("--app-viewport-height", `${height}px`);
+      root.style.setProperty(
+        "--app-canvas-height-desktop",
+        `${desktopCanvasHeight}px`,
+      );
+      root.style.setProperty(
+        "--app-canvas-height-mobile",
+        `${mobileCanvasHeight}px`,
+      );
+    }
+  };
+
+  window.addEventListener("resize", () => {
+    window.requestAnimationFrame(applyViewportSizing);
+  });
+  applyViewportSizing();
+
   const emitPickerQuery = (action) => {
     if (!pickerInput) return;
     const query = pickerInput.value || "";
@@ -20,18 +57,22 @@
 
   if (pickerInput) {
     window.addEventListener("vizmat-structure-picker-open", () => {
+      pickerOpen = true;
       pickerInput.value = "";
       try {
         pickerInput.focus({ preventScroll: true });
       } catch (error) {
         pickerInput.focus();
+        window.scrollTo(0, 0);
       }
       emitPickerQuery("change");
     });
 
     window.addEventListener("vizmat-structure-picker-close", () => {
+      pickerOpen = false;
       pickerInput.blur();
       pickerInput.value = "";
+      applyViewportSizing();
     });
 
     pickerInput.addEventListener("input", () => emitPickerQuery("change"));
@@ -321,6 +362,44 @@
     loader.classList.add("hidden");
     window.setTimeout(() => loader.remove(), 260);
   };
+
+  const setStatus = (message) => {
+    if (status) {
+      status.textContent = message;
+    }
+  };
+
+  const startApp = () => {
+    const bindings = window.wasmBindings;
+    if (!bindings || typeof bindings.start !== "function") {
+      setStatus("Waiting for WebAssembly bindings...");
+      return false;
+    }
+
+    try {
+      bindings.start();
+      hideLoader();
+      return true;
+    } catch (error) {
+      console.error("Failed to start WASM app:", error);
+      setStatus("Failed to start WebAssembly app.");
+      return false;
+    }
+  };
+
+  // Trunk injects the WASM module and then fires this event.
+  window.addEventListener(
+    "TrunkApplicationStarted",
+    () => {
+      startApp();
+    },
+    { once: true },
+  );
+
+  // If Trunk fired before this script loaded, start immediately.
+  if (window.wasmBindings?.start) {
+    startApp();
+  }
 
   // Trunk injects a startup script and emits this event after WASM init.
   // If the event fired before this listener was added, hide immediately.
